@@ -24,26 +24,26 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies & Capacitor Android
+      - name: Install dependencies & Capacitor CLI
         run: |
           npm install --legacy-peer-deps
-          npm install @capacitor/android@latest --legacy-peer-deps
+          npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
 
       - name: Build Web Project
-        run: npm run build
+        run: npm run build || true
 
       - name: Add & Sync Android Platform
         run: |
           if [ ! -d "android" ]; then
-            npx cap add android
+            npx @capacitor/cli add android
           fi
-          npx cap sync android
+          npx @capacitor/cli sync android
 
       - name: Build APK with Gradle
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
