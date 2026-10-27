@@ -1,16 +1,50 @@
-name: Build iOS App
-on: push: branches: [ main ]
-jobs: build: runs-on: macos-latest steps: - name: Checkout code uses: actions/checkout@v3
-  - name: Set up Node.js
-    uses: actions/setup-node@v3
-    with:
-      node-version: 18
+cd "$HOME\Documents\GitHub\badini-translator-ios"
+New-Item -ItemType Directory -Force -Path ".github\workflows"
+@'
+name: Build iOS IPA
 
-  - name: Install dependencies
-    run: npm install
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
-  - name: Build iOS project
-    run: |
-      npx cap sync ios
-      cd ios/App
-      xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphonesimulator -derivedDataPath build
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Web Project
+        run: npm run build
+
+      - name: Sync Capacitor iOS
+        run: npx cap sync ios
+
+      - name: Build Xcode Project
+        run: |
+          cd ios/App
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" clean build
+
+      - name: Package to IPA
+        run: |
+          cd ios/App
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -r ../../BadiniTranslator.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BadiniTranslator-IPA
+          path: BadiniTranslator.ipa
+'@ | Set-Content -Path ".github\workflows\build-ipa.yml" -Encoding UTF8
