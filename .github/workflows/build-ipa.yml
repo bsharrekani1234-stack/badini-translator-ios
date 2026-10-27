@@ -1,17 +1,4 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-﻿name: Build iOS IPA
-=======
-=======
->>>>>>> 75fa5f09de4a06650850e3d28bb8676b1d5b778f
-cd "$HOME\Documents\GitHub\badini-translator-ios"
-New-Item -ItemType Directory -Force -Path ".github\workflows"
-@'
 name: Build iOS IPA
-<<<<<<< HEAD
->>>>>>> 75fa5f09de4a06650850e3d28bb8676b1d5b778f
-=======
->>>>>>> 75fa5f09de4a06650850e3d28bb8676b1d5b778f
 
 on:
   workflow_dispatch:
@@ -57,11 +44,3 @@ jobs:
         with:
           name: BadiniTranslator-IPA
           path: BadiniTranslator.ipa
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-'@ | Set-Content -Path ".github\workflows\build-ipa.yml" -Encoding UTF8
->>>>>>> 75fa5f09de4a06650850e3d28bb8676b1d5b778f
-=======
-'@ | Set-Content -Path ".github\workflows\build-ipa.yml" -Encoding UTF8
->>>>>>> 75fa5f09de4a06650850e3d28bb8676b1d5b778f
