@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getJobsStore,
@@ -5,6 +7,7 @@ import {
   runServerTranslationWorker,
   ServerTranslationJob,
 } from '@/lib/server-translation-manager';
+import { sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
 
 declare global {
   // eslint-disable-next-line no-var
@@ -18,10 +21,38 @@ function getPdfUploadChunksStore() {
   return global.__badiniPdfUploadChunks;
 }
 
+function autoRecoverIncompleteJobs(store: Map<string, ServerTranslationJob>) {
+  const dataDir = path.join(process.cwd(), '.data');
+  for (const job of store.values()) {
+    if (job.error && (job.error.includes('{"error"') || job.error.includes('429'))) {
+      job.error = undefined;
+    }
+    if (
+      (job.status === 'error' || job.status === 'running') &&
+      job.donePagesCount < job.totalToTranslate
+    ) {
+      const pdfPath = path.join(dataDir, `${job.id}.pdf`);
+      if (fs.existsSync(pdfPath)) {
+        job.status = 'running';
+        job.error = undefined;
+        job.statusMessage = `وەرگێرانا لاپەرێن مایی ب شێوەیێ خۆکار یا بەردەوامە (${job.donePagesCount} ژ ${job.totalToTranslate})...`;
+        try {
+          const buf = fs.readFileSync(pdfPath);
+          void runServerTranslationWorker(job.id, new Uint8Array(buf));
+        } catch {
+          // ignore read error
+        }
+      }
+    }
+  }
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const jobId = searchParams.get('jobId');
   const store = getJobsStore();
+
+  autoRecoverIncompleteJobs(store);
 
   if (jobId) {
     const job = store.get(jobId);
@@ -38,35 +69,73 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
-    const action = String(formData.get('action') || 'start');
+    const contentType = req.headers.get('content-type') || '';
+    const isJson = contentType.includes('application/json');
+
+    let action = 'start';
+    let uploadId = '';
+    let chunkIndex = 0;
+    let fileName = 'book.pdf';
+    let chunkBuffer: Buffer | null = null;
+    let directPdfBytes: Uint8Array | null = null;
+    let jobIdParam = '';
+    let bookTitle = 'پەرتووکا وەرگێرای بۆ بادینی';
+    let startPage = 1;
+    let endPage = 1;
+
+    if (isJson) {
+      const body = await req.json();
+      action = String(body.action || 'start').trim();
+      uploadId = String(body.uploadId || '');
+      chunkIndex = Number(body.chunkIndex || 0);
+      fileName = String(body.fileName || 'book.pdf');
+      if (body.chunkBase64) {
+        chunkBuffer = Buffer.from(String(body.chunkBase64), 'base64');
+      }
+      jobIdParam = String(body.jobId || '');
+      bookTitle = String(body.bookTitle || 'پەرتووکا وەرگێرای بۆ بادینی');
+      startPage = Math.max(1, Number(body.startPage || 1));
+      endPage = Math.max(startPage, Number(body.endPage || startPage));
+    } else {
+      const formData = await req.formData();
+      action = String(formData.get('action') || 'start');
+      uploadId = String(formData.get('uploadId') || '');
+      chunkIndex = Number(formData.get('chunkIndex') || 0);
+      fileName = String(formData.get('fileName') || 'book.pdf');
+      const chunkBlob = formData.get('chunk') as File | null;
+      if (chunkBlob) {
+        chunkBuffer = Buffer.from(await chunkBlob.arrayBuffer());
+      }
+      const file = formData.get('file') as File | null;
+      if (file) {
+        directPdfBytes = new Uint8Array(await file.arrayBuffer());
+        fileName = file.name || fileName;
+      }
+      jobIdParam = String(formData.get('jobId') || '');
+      bookTitle = String(formData.get('bookTitle') || 'پەرتووکا وەرگێرای بۆ بادینی');
+      startPage = Math.max(1, Number(formData.get('startPage') || 1));
+      endPage = Math.max(startPage, Number(formData.get('endPage') || startPage));
+    }
 
     const store = getJobsStore();
     const chunkStore = getPdfUploadChunksStore();
 
     if (action === 'upload-chunk') {
-      const uploadId = String(formData.get('uploadId') || '');
-      const chunkIndex = Number(formData.get('chunkIndex') || 0);
-      const fileName = String(formData.get('fileName') || 'book.pdf');
-      const chunkBlob = formData.get('chunk') as File | null;
-
-      if (!uploadId || !chunkBlob) {
+      if (!uploadId || !chunkBuffer) {
         return NextResponse.json({ error: 'پشکا فایلا PDF کێمە' }, { status: 400 });
       }
 
-      const buf = Buffer.from(await chunkBlob.arrayBuffer());
       let entry = chunkStore.get(uploadId);
       if (!entry) {
         entry = { chunks: [], fileName };
         chunkStore.set(uploadId, entry);
       }
-      entry.chunks[chunkIndex] = buf;
+      entry.chunks[chunkIndex] = chunkBuffer;
       return NextResponse.json({ ok: true, chunkIndex });
     }
 
     if (action === 'stop') {
-      const jobId = String(formData.get('jobId') || '');
-      const job = store.get(jobId);
+      const job = store.get(jobIdParam);
       if (job) {
         job.status = 'stopped';
         job.statusMessage = 'وەرگێران ژ لایێ بکارئینەری ڤە هاتە راوەستاندن.';
@@ -76,14 +145,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ job });
     }
 
-    const uploadId = String(formData.get('uploadId') || '');
-    const file = formData.get('file') as File | null;
-    const bookTitle = String(formData.get('bookTitle') || 'پەرتووکا وەرگێرای بۆ بادینی');
-    const startPage = Math.max(1, Number(formData.get('startPage') || 1));
-    const endPage = Math.max(startPage, Number(formData.get('endPage') || startPage));
-
     let pdfBytes: Uint8Array | null = null;
-    let fileName = String(formData.get('fileName') || file?.name || 'book.pdf');
 
     if (uploadId && chunkStore.has(uploadId)) {
       const entry = chunkStore.get(uploadId)!;
@@ -91,9 +153,8 @@ export async function POST(req: NextRequest) {
       pdfBytes = new Uint8Array(Buffer.concat(validChunks));
       fileName = entry.fileName || fileName;
       chunkStore.delete(uploadId);
-    } else if (file) {
-      const arrayBuffer = await file.arrayBuffer();
-      pdfBytes = new Uint8Array(arrayBuffer);
+    } else if (directPdfBytes) {
+      pdfBytes = directPdfBytes;
     }
 
     if (!pdfBytes || pdfBytes.length === 0) {
@@ -116,7 +177,7 @@ export async function POST(req: NextRequest) {
       donePagesCount: 0,
       status: 'running',
       statusMessage:
-        'وەرگێرانا بلەز د سێرڤەری دا دەستپێکر (١٢ لاپەر د هەمان دەم دا) — خۆ ئەگەر بەرنامەی بگری ژی دێ شۆلێ خۆ تەمام کەت...',
+        'وەرگێرانا بلەز د سێرڤەری دا دەستپێکر (١٠ لاپەر د هەمان دەم دا) — خۆ ئەگەر بەرنامەی بگری ژی دێ شۆلێ خۆ تەمام کەت...',
       pages: [],
       createdAt: new Date().toLocaleDateString('ku-IQ'),
       updatedAt: now,
@@ -130,8 +191,14 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ job: newJob });
   } catch (err: unknown) {
-    const message =
-      err instanceof Error ? err.message : 'شاشی د دەستپێکرنا وەرگێرانا پاشخانەیی دا چێبوو';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: sanitizeErrorMessageKurdish(
+          err,
+          'شاشی د دەستپێکرنا وەرگێرانا پاشخانەیی دا چێبوو'
+        ),
+      },
+      { status: 500 }
+    );
   }
 }

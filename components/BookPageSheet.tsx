@@ -97,15 +97,15 @@ export function BookPageSheet({
       {/* Subtle decorative inner frame on desktop */}
       <div className="pointer-events-none hidden sm:block absolute inset-3 border border-[#EFE9D8]/70 rounded-xs" />
 
-      {/* Top interactive hover edit button (hidden in print) */}
+      {/* Top interactive edit button (hidden in print) */}
       {onEditPageClick && (
         <button
           type="button"
           onClick={() => onEditPageClick(page.pageNumber)}
           title="دەستکاریکرنا ڤی لاپەری"
-          className="no-print absolute top-2.5 left-2.5 opacity-90 sm:opacity-0 hover:opacity-100 focus:opacity-100 group-hover:opacity-100 px-2.5 py-1 text-[11px] font-sans bg-stone-100/90 hover:bg-stone-200 text-stone-700 border border-stone-300/70 rounded-md transition-opacity cursor-pointer z-10"
+          className="no-print absolute top-2.5 left-2.5 opacity-95 sm:opacity-85 hover:opacity-100 focus:opacity-100 px-3 py-1 text-[11px] font-sans font-semibold bg-[#FAF8F3]/95 hover:bg-[#9A3412] text-stone-800 hover:text-white border border-[#DED6C3] hover:border-[#9A3412] rounded-lg transition-all cursor-pointer z-10 shadow-2xs"
         >
-          دەستکاریکرنا لاپەری {pageNumEastern}
+          ✎ دەستکاریکرنا لاپەری {pageNumEastern}
         </button>
       )}
 

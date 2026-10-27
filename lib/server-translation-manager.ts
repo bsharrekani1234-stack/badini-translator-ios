@@ -1,8 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { Type } from '@google/genai';
 import { BookPageData } from './book-types';
+import {
+  generateContentResilient,
+  parseOrRepairJson,
+  sanitizeErrorMessageKurdish,
+} from './gemini-resilient';
 
 export interface ServerTranslationJob {
   id: string;
@@ -42,8 +47,11 @@ function ensureDataDir() {
 }
 
 export function getJobsStore(): Map<string, ServerTranslationJob> {
-  if (!global.__badiniTranslationJobs) {
-    global.__badiniTranslationJobs = new Map<string, ServerTranslationJob>();
+  const activeLoops = getActiveLoops();
+  if (!global.__badiniTranslationJobs || activeLoops.size === 0) {
+    if (!global.__badiniTranslationJobs) {
+      global.__badiniTranslationJobs = new Map<string, ServerTranslationJob>();
+    }
     try {
       ensureDataDir();
       if (fs.existsSync(JOBS_META_PATH)) {
@@ -51,7 +59,31 @@ export function getJobsStore(): Map<string, ServerTranslationJob> {
         const list = JSON.parse(raw) as ServerTranslationJob[];
         if (Array.isArray(list)) {
           for (const item of list) {
+            if (item.error && (item.error.includes('{"error"') || item.error.includes('429'))) {
+              item.error = undefined;
+            }
             global.__badiniTranslationJobs.set(item.id, item);
+
+            if (
+              (item.status === 'error' || item.status === 'running') &&
+              item.donePagesCount < item.totalToTranslate &&
+              !activeLoops.has(item.id)
+            ) {
+              const savedPdfPath = path.join(DATA_DIR, `${item.id}.pdf`);
+              if (fs.existsSync(savedPdfPath)) {
+                item.status = 'running';
+                item.error = undefined;
+                item.statusMessage = `${toEasternArabic(
+                  item.donePagesCount
+                )} ژ ${toEasternArabic(
+                  item.totalToTranslate
+                )} لاپەران تەمام بووینە — لاپەرێن مایی ب شێوەیێ خۆکار دهێنە تەمامکرن...`;
+                const pdfBuf = fs.readFileSync(savedPdfPath);
+                setTimeout(() => {
+                  void runServerTranslationWorker(item.id, new Uint8Array(pdfBuf));
+                }, 100);
+              }
+            }
           }
         }
       }
@@ -80,17 +112,6 @@ export function persistJobsStore() {
   }
 }
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 function toEasternArabic(num: number | string): string {
   const map = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
   return String(num).replace(/[0-9]/g, (d) => map[Number(d)]);
@@ -111,117 +132,86 @@ async function translateSubPdfBatch(
 ٥. پەراوێز (footnotes): ئەگەر ل خوارا لاپەری پەراوێز (هامش) هەبن، هەمیان ب تەحقیق وەرگێرە بادینی و بێخە د لیستا footnotes یا وی لاپەری دا.
 ٦. ژمارەیا لاپەران: ئەڤ فایلە لاپەرێن [${pageNumbers.join(', ')}] بخۆڤە دگریت. دڤێت هەر لاپەرەک ب ژمارەیا خۆ یا دروست بهێتە زڤڕاندن.`;
 
-  const candidateModels = [
-    'gemini-3.8-flash',
-    'gemini-flash-latest',
-    'gemini-3.1-flash-lite',
-    'gemini-3.8-flash',
-    'gemini-flash-latest',
-  ];
-
-  let rawJson = '';
-  let lastErr: unknown = null;
-
-  for (let attempt = 0; attempt < candidateModels.length; attempt++) {
-    const modelName = candidateModels[attempt];
-    try {
-      const isGemini3 = modelName.startsWith('gemini-3');
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType: 'application/pdf',
-                data: pdfBase64,
-              },
+  const response = await generateContentResilient(
+    {
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: pdfBase64,
             },
-            {
-              text: `لاپەرێن (${pageNumbers.join(
-                ', '
-              )}) ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
-            },
-          ],
-        },
-        config: {
-          systemInstruction,
-          temperature: 0.15,
-          ...(isGemini3
-            ? {
-                thinkingConfig: {
-                  thinkingLevel: ThinkingLevel.LOW,
-                },
-              }
-            : {}),
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              pages: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    pageNumber: { type: Type.INTEGER },
-                    showHeader: { type: Type.BOOLEAN },
-                    blocks: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          blockType: {
-                            type: Type.STRING,
-                            description: 'cover, heading, paragraph, stars, or blank',
-                          },
-                          text: { type: Type.STRING },
-                          align: { type: Type.STRING },
-                          size: { type: Type.STRING },
-                          kicker: { type: Type.STRING },
-                          titleLines: {
-                            type: Type.ARRAY,
-                            items: { type: Type.STRING },
-                          },
-                          compilerLabel: { type: Type.STRING },
-                          compilerName: { type: Type.STRING },
-                          verse: { type: Type.STRING },
-                          verseRef: { type: Type.STRING },
+          },
+          {
+            text: `لاپەرێن (${pageNumbers.join(
+              ', '
+            )}) ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
+          },
+        ],
+      },
+      config: {
+        systemInstruction,
+        temperature: 0.15,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            pages: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  pageNumber: { type: Type.INTEGER },
+                  showHeader: { type: Type.BOOLEAN },
+                  blocks: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        blockType: {
+                          type: Type.STRING,
+                          description: 'cover, heading, paragraph, stars, or blank',
                         },
-                        required: ['blockType'],
+                        text: { type: Type.STRING },
+                        align: { type: Type.STRING },
+                        size: { type: Type.STRING },
+                        kicker: { type: Type.STRING },
+                        titleLines: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                        },
+                        compilerLabel: { type: Type.STRING },
+                        compilerName: { type: Type.STRING },
+                        verse: { type: Type.STRING },
+                        verseRef: { type: Type.STRING },
                       },
-                    },
-                    footnotes: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
+                      required: ['blockType'],
                     },
                   },
-                  required: ['pageNumber', 'blocks'],
+                  footnotes: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
                 },
+                required: ['pageNumber', 'blocks'],
               },
             },
-            required: ['pages'],
           },
+          required: ['pages'],
         },
-      });
+      },
+    },
+    10
+  );
 
-      if (response.text) {
-        rawJson = response.text.trim();
-        break;
-      }
-    } catch (err) {
-      lastErr = err;
-      await sleep(700 * (attempt + 1));
-    }
-  }
-
-  if (!rawJson) {
-    throw lastErr || new Error('پەیوەندی ب سێرڤەرێ وەرگێرانێ سەرنەکەفت');
-  }
-
-  const parsed = JSON.parse(rawJson);
+  const rawJson = response.text?.trim() || '{}';
+  const parsed = parseOrRepairJson<{ pages?: Record<string, unknown>[] }>(rawJson);
 
   return (parsed.pages || []).map((p: Record<string, unknown>, idx: number) => {
-    const pageNum =
-      typeof p.pageNumber === 'number' ? p.pageNumber : pageNumbers[idx] || idx + 1;
+    const rawNum = typeof p.pageNumber === 'number' ? p.pageNumber : -1;
+    const pageNum = pageNumbers.includes(rawNum)
+      ? rawNum
+      : pageNumbers[idx] ?? (pageNumbers[0] || 1) + idx;
     const rawBlocks = Array.isArray(p.blocks) ? p.blocks : [];
 
     const blocks = rawBlocks.map((b: Record<string, unknown>) => {
@@ -302,8 +292,9 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
     const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     const existingPageNums = new Set(job.pages.map((p) => p.pageNumber));
 
-    const BATCH_SIZE = 3;
-    const CONCURRENCY = 4; // 12 pages translated simultaneously in parallel!
+    // Pack 5 pages per API call with 2 concurrent workers (10 pages at a time, using 60% fewer quota requests!)
+    const BATCH_SIZE = 5;
+    const CONCURRENCY = 2;
 
     const allBatches: number[][] = [];
     for (let p = job.startPage; p <= job.endPage; p += BATCH_SIZE) {
@@ -340,7 +331,6 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
         concurrentGroup.map(async (pageNumbers) => {
           const subDoc = await PDFDocument.create();
           const totalDocPages = srcDoc.getPageCount();
-          // Support both full PDF (where page index is n - 1) and pre-sliced sub-PDF (where index is n - job.startPage)
           const indicesToCopy = pageNumbers.map((n) => {
             const zeroIdx = totalDocPages < job.endPage ? n - job.startPage : n - 1;
             return Math.max(0, Math.min(totalDocPages - 1, zeroIdx));
@@ -350,7 +340,6 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
           const pdfBase64 = await subDoc.saveAsBase64();
           const batchPages = await translateSubPdfBatch(pdfBase64, pageNumbers);
 
-          // Immediately save each completed batch to the job store so the user sees pages live right away!
           const updatedJob = store.get(jobId);
           if (!updatedJob || updatedJob.status === 'stopped') return;
 
@@ -382,6 +371,7 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
     const finalJob = store.get(jobId);
     if (finalJob && finalJob.status === 'running') {
       finalJob.status = 'completed';
+      finalJob.error = undefined;
       finalJob.statusMessage = `وەرگێرانا پەرتووکێ (${toEasternArabic(
         finalJob.pages.length
       )} لاپەر) ب تەمامی خلاس بوو!`;
@@ -391,9 +381,12 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
   } catch (err: unknown) {
     const failedJob = store.get(jobId);
     if (failedJob) {
+      // If at least some pages were translated and an error occurred, keep status as error with friendly Kurdish message
       failedJob.status = 'error';
-      failedJob.error =
-        err instanceof Error ? err.message : 'شاشی د وەرگێرانا پاشخانەیی دا چێبوو';
+      failedJob.error = sanitizeErrorMessageKurdish(
+        err,
+        'شاشیەک د وەرگێرانا پاشخانەیی دا چێبوو، تکایە دووبارە هەول بدە.'
+      );
       failedJob.statusMessage = failedJob.error;
       failedJob.updatedAt = Date.now();
       persistJobsStore();

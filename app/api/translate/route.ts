@@ -1,14 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+import { generateContentResilient, sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
 
 export async function POST(req: NextRequest) {
   try {
@@ -29,16 +20,21 @@ ${text}
 
 بتنێ دەقێ وەرگێرای ب بادینی بزڤڕینە بێی چو شڕۆڤەیێن زێدە.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-    });
+    const response = await generateContentResilient(
+      {
+        contents: prompt,
+        fastMode: true,
+      },
+      6
+    );
 
     return NextResponse.json({
       translatedText: response.text?.trim() || text,
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'شاشیەک د پەیوەندیێ دا چێبوو';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: sanitizeErrorMessageKurdish(error, 'شاشیەک د پەیوەندیێ دا چێبوو') },
+      { status: 500 }
+    );
   }
 }

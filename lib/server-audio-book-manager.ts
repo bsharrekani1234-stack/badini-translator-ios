@@ -2,8 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { Type } from '@google/genai';
 import { BookPageData } from './book-types';
+import {
+  collapseRepetitionLoops,
+  generateContentResilient,
+  parseOrRepairJson,
+  sanitizeErrorMessageKurdish,
+} from './gemini-resilient';
 
 const execFileAsync = promisify(execFile);
 
@@ -66,6 +72,9 @@ export function getAudioJobsStore(): Map<string, ServerAudioBookJob> {
         const list = JSON.parse(raw) as ServerAudioBookJob[];
         if (Array.isArray(list)) {
           for (const item of list) {
+            if (item.error) {
+              item.error = sanitizeErrorMessageKurdish(item.error, 'شاشی د نڤیسینا دەنگی دا چێبوو');
+            }
             global.__badiniAudioJobs.set(item.id, item);
           }
         }
@@ -95,24 +104,6 @@ export function persistAudioJobsStore() {
   }
 }
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
-
-const AUDIO_MODELS = [
-  'gemini-3.5-transcribe',
-  'gemini-3.8-flash',
-  'gemini-flash-latest',
-  'gemini-3.1-flash-lite',
-] as const;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 function toEasternArabic(num: number | string): string {
   const map = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
   return String(num).replace(/[0-9]/g, (d) => map[Number(d)]);
@@ -120,7 +111,7 @@ function toEasternArabic(num: number | string): string {
 
 /**
  * Uses ffprobe/ffmpeg to get audio duration and split long audio into fast, lightweight
- * 7-minute (420s) 16kHz mono 32kbps MP3 segments so they can be transcribed in parallel
+ * 8-minute (480s) 16kHz mono 24kbps MP3 segments so they can be transcribed in parallel
  * without hitting any payload limit or timeout.
  */
 async function splitAudioIntoFastSegments(
@@ -143,7 +134,6 @@ async function splitAudioIntoFastSegments(
       durationSec = Math.round(parsed);
     }
   } catch {
-    // fallback duration estimate from file size (~1MB per minute)
     try {
       const stat = fs.statSync(inputPath);
       durationSec = Math.max(60, Math.round((stat.size / (1024 * 1024)) * 90));
@@ -154,7 +144,8 @@ async function splitAudioIntoFastSegments(
 
   const outPattern = path.join(workDir, 'seg_%03d.mp3');
   try {
-    // Convert and split into 420-second (7-minute) mono 16kHz 32kbps MP3 segments
+    // Convert and split into 180-second (3-minute) mono 16kHz 24kbps MP3 segments (~540 KB each)
+    // Short 3-minute segments prevent output token overflow ("Unterminated string in JSON") and transcribe in parallel
     await execFileAsync('ffmpeg', [
       '-y',
       '-i',
@@ -165,11 +156,11 @@ async function splitAudioIntoFastSegments(
       '-ar',
       '16000',
       '-b:a',
-      '32k',
+      '24k',
       '-f',
       'segment',
       '-segment_time',
-      '420',
+      '180',
       outPattern,
     ]);
 
@@ -209,91 +200,84 @@ async function transcribeSingleSegment(
 
 یاسایا هەری گرنگ و بنەرەتی (ب چ رەنگان لێ دەرنەکەڤە):
 ١. دەقێ دەنگی پەیڤ ب پەیڤ (حەرفیەن / Verbatim) بنڤیسە هەروەکی مامۆستای یان ئاخفتنکەری گۆتی!
-٢. ب چ رەنگان چ دەستکاریێ د ئاخفتنا مامۆستای دا نەکە، چ پەیڤان ژ دەڤ خۆ زێدە نەکە، چ پەیڤان کورت نەکە، و خۆ ئەگەر مامۆستا د پەیڤەکێ دا خەلەت ببیت یان پەیڤەکێ دووبارە بکەت ژی، هەر وەکی وی گۆتی بنڤیسە بێی کو تو ژ دەڤ خۆ بگوهۆڕی!
+٢. ب چ رەنگان چ دەستکاریێ د ئاخفتنا مامۆستای دا نەکە، چ پەیڤان ژ دەڤ خۆ زێدە نەکە، چ پەیڤان کورت نەکە، و خۆ ئەگەر مامۆستا د پەیڤەکێ دا خەلەت ببیت ژی، هەر وەکی وی گۆتی بنڤیسە بێی کو تو ژ دەڤ خۆ بگوهۆڕی!
 ٣. کارێ تە بتنێ ئەوە کو تو وی دەنگی بکەیە نڤیسینەکا رێکخستی د ناڤ لاپەرێن پەرتووکێ دا (پەرەگرافێن رێکخستی، خال و فاریزە، و سەردێڕێن گونجای بۆ بەشان).
 ٤. هەر ئایەتەکا قورئانێ مامۆستا بخوینیت، ب رێنڤیسا قورئانی د ناڤ کەڤانێن قورئانی ﴿ ... ﴾ دا دانێ.
 ٥. هەر فەرموودەیەکا پێغەمبەری (صلى الله عليه وسلم) یان رێزەکا مەتنێ عەرەبی یان گۆتنا زانایەکی ب عەرەبی مامۆستا بخوینیت، بێخە د ناڤ {{r: ... }} دا دا کو ب رەنگێ سۆر یێ پەرتووکێ دەرکەڤیت.
-٦. نڤیسینێ دابەش بکە ل سەر لاپەرێن رێکخستی یێن پەرتووکێ (هەر لاپەرەک نێزیکی ٥ هەتا ٦ پەرەگرافان بیت دا کو لاپەرێ A4 پڕ و جوان بیت).`;
+٦. نڤیسینێ دابەش بکە ل سەر لاپەرێن رێکخستی یێن پەرتووکێ (هەر لاپەرەک نێزیکی ٥ هەتا ٦ پەرەگرافان بیت دا کو لاپەرێ A4 پڕ و جوان بیت).
+٧. هشیار بە: چ جاران هەمان رستە یان پەیڤ ب شێوەیێ خۆکار و بێ رامان د ناڤ JSON دا دووبارە نەکە (No repetition loops). هەر پەرەگرافەک با ژ ٢٥٠ پەیڤان درێژتر نەبیت و دەمێ بێدەنگی د دەنگی دا هەبیت چ تشتان نەنڤیسە.`;
 
-  let lastErr: unknown = null;
-
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const modelName = AUDIO_MODELS[attempt % AUDIO_MODELS.length];
-    try {
-      const isGemini3 = modelName.startsWith('gemini-3');
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Audio,
-                },
-              },
-              {
-                text: `ئەڤە پشکا (${segmentIdx + 1} ژ ${totalSegments}) یە ژ فایلا دەنگی یا ب ناڤێ «${
-                  lessonTitle || bookTitle
-                }» (وانەبێژ: ${speakerName}). هەمی ئاخفتنا د ناڤ ڤێ پشکێ دا پەیڤ ب پەیڤ بێی چ کورتکرن یان گوهۆڕین بنڤیسە و رێکبێخە د ناڤ لاپەرێن پەرتووکێ دا ب فۆرماتا JSON.`,
-              },
-            ],
-          },
-        ],
-        config: {
-          systemInstruction: systemPrompt,
-          temperature: 0.1,
-          ...(isGemini3
-            ? {
-                thinkingConfig: {
-                  thinkingLevel: ThinkingLevel.LOW,
-                },
-              }
-            : {}),
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              pages: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    heading: {
-                      type: Type.STRING,
-                      description: 'Optional red section heading for this page if a new topic starts.',
-                    },
-                    paragraphs: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                      description:
-                        'Verbatim paragraphs spoken in the audio on this page, keeping {{r:...}} for Arabic text and ﴿...﴾ for Quranic verses.',
-                    },
-                  },
-                  required: ['paragraphs'],
-                },
+  const response = await generateContentResilient(
+    {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: base64Audio,
               },
             },
-            required: ['pages'],
-          },
+            {
+              text: `ئەڤە پشکا (${segmentIdx + 1} ژ ${totalSegments}) یە ژ فایلا دەنگی یا ب ناڤێ «${
+                lessonTitle || bookTitle
+              }» (وانەبێژ: ${speakerName}). هەمی ئاخفتنا د ناڤ ڤێ پشکێ دا پەیڤ ب پەیڤ بێی چ کورتکرن یان گوهۆڕین بنڤیسە و رێکبێخە د ناڤ لاپەرێن پەرتووکێ دا ب فۆرماتا JSON.`,
+            },
+          ],
         },
-      });
+      ],
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.2,
+        maxOutputTokens: 32768,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            pages: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  heading: {
+                    type: Type.STRING,
+                    description: 'Optional red section heading for this page if a new topic starts.',
+                  },
+                  paragraphs: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description:
+                      'Verbatim paragraphs spoken in the audio on this page, keeping {{r:...}} for Arabic text and ﴿...﴾ for Quranic verses.',
+                  },
+                },
+                required: ['paragraphs'],
+              },
+            },
+          },
+          required: ['pages'],
+        },
+      },
+    },
+    10
+  );
 
-      const rawJson = response.text?.trim() || '{}';
-      const data = JSON.parse(rawJson);
-      if (Array.isArray(data.pages) && data.pages.length > 0) {
-        return data.pages as ParsedSegmentPage[];
-      }
-    } catch (err) {
-      lastErr = err;
-      await sleep(700 * (attempt + 1));
-    }
+  const rawJson = response.text?.trim() || '{}';
+  const data = parseOrRepairJson<{ pages?: ParsedSegmentPage[] }>(rawJson);
+  if (Array.isArray(data.pages) && data.pages.length > 0) {
+    return data.pages
+      .map((p) => ({
+        heading: p.heading ? collapseRepetitionLoops(String(p.heading)).trim() : undefined,
+        paragraphs: Array.isArray(p.paragraphs)
+          ? p.paragraphs
+              .map((para) => collapseRepetitionLoops(String(para || '')).trim())
+              .filter((para) => para.length > 0)
+          : [],
+      }))
+      .filter((p) => p.paragraphs.length > 0);
   }
 
-  throw lastErr instanceof Error
-    ? lastErr
-    : new Error('نەشیا دەنگی بکەتە نڤیسین، تکایە جارەکا دی هەول بدە');
+  throw new Error('نەشیا دەنگی بکەتە نڤیسین، تکایە جارەکا دی هەول بدە');
 }
 
 function buildBookPagesFromParsed(
@@ -437,8 +421,7 @@ export async function runServerAudioToBookWorker(
     const totalSegs = segmentPaths.length;
     job.totalSegments = totalSegs;
     job.audioDurationSec = durationSec;
-    // With 3x parallel processing, each 7-min segment takes ~10s
-    job.estimatedTotalSec = Math.max(15, Math.ceil(totalSegs / 3) * 14);
+    job.estimatedTotalSec = Math.max(12, Math.ceil(totalSegs / 2) * 12);
     job.statusMessage = `دەنگ هاتە دابەشکرن بۆ ${toEasternArabic(
       totalSegs
     )} پشکان — نڤیسینا بلەز دەستپێکر...`;
@@ -446,7 +429,81 @@ export async function runServerAudioToBookWorker(
     persistAudioJobsStore();
 
     const segmentResults: (ParsedSegmentPage[] | null)[] = new Array(totalSegs).fill(null);
-    const CONCURRENCY = 3; // Process 3 audio segments simultaneously in parallel!
+    const CONCURRENCY = 3; // Process 3 short 3-minute segments simultaneously for fast throughput
+
+    const transcribeWithSubSplitFallback = async (
+      segPath: string,
+      segIdx: number,
+      currentJob: ServerAudioBookJob
+    ): Promise<ParsedSegmentPage[]> => {
+      const segBuf = fs.readFileSync(segPath);
+      const segMime = segPath.endsWith('.mp3') ? 'audio/mp3' : originalMimeType || 'audio/mp3';
+      try {
+        return await transcribeSingleSegment(
+          segBuf,
+          segMime,
+          segIdx,
+          totalSegs,
+          currentJob.bookTitle,
+          currentJob.lessonTitle,
+          currentJob.speakerName
+        );
+      } catch (firstErr) {
+        // Fallback: split this 3-minute segment into 60-second micro-segments so it never overflows token limits
+        const subDir = path.join(jobWorkDir, `sub_${segIdx}`);
+        try {
+          if (!fs.existsSync(subDir)) {
+            fs.mkdirSync(subDir, { recursive: true });
+          }
+          const subPattern = path.join(subDir, 'micro_%03d.mp3');
+          await execFileAsync('ffmpeg', [
+            '-y',
+            '-i',
+            segPath,
+            '-vn',
+            '-ac',
+            '1',
+            '-ar',
+            '16000',
+            '-b:a',
+            '24k',
+            '-f',
+            'segment',
+            '-segment_time',
+            '60',
+            subPattern,
+          ]);
+          const microFiles = fs
+            .readdirSync(subDir)
+            .filter((f) => f.startsWith('micro_') && f.endsWith('.mp3'))
+            .sort()
+            .map((f) => path.join(subDir, f));
+
+          if (microFiles.length > 1) {
+            const combinedMicroPages: ParsedSegmentPage[] = [];
+            for (let m = 0; m < microFiles.length; m++) {
+              const mBuf = fs.readFileSync(microFiles[m]);
+              const mPages = await transcribeSingleSegment(
+                mBuf,
+                'audio/mp3',
+                segIdx,
+                totalSegs,
+                currentJob.bookTitle,
+                currentJob.lessonTitle,
+                currentJob.speakerName
+              );
+              combinedMicroPages.push(...mPages);
+            }
+            if (combinedMicroPages.length > 0) {
+              return combinedMicroPages;
+            }
+          }
+        } catch {
+          // If micro-split also fails, throw original sanitized error
+        }
+        throw firstErr;
+      }
+    };
 
     for (let i = 0; i < totalSegs; i += CONCURRENCY) {
       const currentJob = store.get(jobId);
@@ -468,17 +525,7 @@ export async function runServerAudioToBookWorker(
       await Promise.all(
         batchIndices.map(async (segIdx) => {
           const segPath = segmentPaths[segIdx];
-          const segBuf = fs.readFileSync(segPath);
-          const segMime = segPath.endsWith('.mp3') ? 'audio/mp3' : originalMimeType || 'audio/mp3';
-          const pagesForSeg = await transcribeSingleSegment(
-            segBuf,
-            segMime,
-            segIdx,
-            totalSegs,
-            currentJob.bookTitle,
-            currentJob.lessonTitle,
-            currentJob.speakerName
-          );
+          const pagesForSeg = await transcribeWithSubSplitFallback(segPath, segIdx, currentJob);
           segmentResults[segIdx] = pagesForSeg;
 
           const latestJob = store.get(jobId);
@@ -524,6 +571,7 @@ export async function runServerAudioToBookWorker(
       );
       finalJob.doneSegments = totalSegs;
       finalJob.status = 'completed';
+      finalJob.error = undefined;
       finalJob.statusMessage = `دەنگ ب تەمامی هاتە نڤیسین و رێکخستن (${toEasternArabic(
         finalJob.pages.length
       )} لاپەر)!`;
@@ -534,8 +582,10 @@ export async function runServerAudioToBookWorker(
     const failedJob = store.get(jobId);
     if (failedJob) {
       failedJob.status = 'error';
-      failedJob.error =
-        err instanceof Error ? err.message : 'شاشی د نڤیسینا دەنگی دا چێبوو';
+      failedJob.error = sanitizeErrorMessageKurdish(
+        err,
+        'شاشی د نڤیسینا دەنگی دا چێبوو، تکایە دووبارە هەول بدە.'
+      );
       failedJob.statusMessage = failedJob.error;
       failedJob.updatedAt = Date.now();
       persistAudioJobsStore();

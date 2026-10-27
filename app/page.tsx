@@ -230,10 +230,17 @@ export default function BadiniBookTranslatorPage() {
   const [pdfScale, setPdfScale] = useState<number>(2);
   const [downloadSuccessMsg, setDownloadSuccessMsg] = useState<string | null>(null);
 
-  // Page Editor Modal state
+  // Page Editor Modal & Inline Editor state
   const [editingPageNumber, setEditingPageNumber] = useState<number | null>(null);
   const [aiRefiningIdx, setAiRefiningIdx] = useState<number | null>(null);
+  const [aiRefiningMode, setAiRefiningMode] = useState<'spelling' | 'fluent' | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [editorFindText, setEditorFindText] = useState<string>('');
+  const [editorReplaceText, setEditorReplaceText] = useState<string>('');
+  const [editorStatusBanner, setEditorStatusBanner] = useState<string | null>(null);
+  const [editorBotPrompt, setEditorBotPrompt] = useState<string>('');
+  const [chatSubMode, setChatSubMode] = useState<'bot' | 'manual'>('bot');
+  const isStorageHydratedRef = useRef<boolean>(false);
 
   // New Arabic PDF Upload & Translation state
   const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
@@ -274,7 +281,7 @@ export default function BadiniBookTranslatorPage() {
     {
       id: 'welcome',
       role: 'assistant',
-      text: 'سلاڤ! ئەز هاریکارێ تە یێ وەرگێران و راستڤەکرنا پەرتووکێ مە ب شێوەزارێ بادینی. هەر خەلەتیەک یان تێبینیەکا تە ل سەر هەر لاپەرەکی هەبیت بێژە من (بۆ نموونە: «ل لاپەرێ ٢ ڤێ پەیڤێ بگوهۆڕە»)، ئەز دێ ئێکسەر لاپەری بۆ تە راستڤەکەم.',
+      text: 'سلاڤ! ئەز هاریکارێ تە یێ بلەز بۆ راستڤەکرنا خەلەتیان و دەستکاریکرنا لاپەران ب شێوەزارێ بادینی مە. هەر خەلەتیەک یان تێبینیەکا تە ل سەر هەر لاپەرەکی هەبیت بێژە من (بۆ نموونە: «ل لاپەرێ ٢ پەیڤا X بکە Y» یان «خەلەتیێن ڤی لاپەری راستڤەکە»)، ئەز دێ د چەند چرکەیەکان دا لاپەری بۆ تە چێکەم.',
     },
   ]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -398,6 +405,8 @@ export default function BadiniBookTranslatorPage() {
       }
     } catch {
       // Ignore storage errors
+    } finally {
+      isStorageHydratedRef.current = true;
     }
 
     const syncServerJobsOnMount = async () => {
@@ -501,6 +510,7 @@ export default function BadiniBookTranslatorPage() {
         if (job.status === 'completed') {
           setIsTranslatingUpload(false);
           setActiveServerJobId(null);
+          setUploadError(null);
           setActiveSection('reader');
           setDownloadSuccessMsg(
             `پەرتووکا «${job.bookTitle}» (${toEasternArabicNumerals(
@@ -511,7 +521,12 @@ export default function BadiniBookTranslatorPage() {
           setIsTranslatingUpload(false);
           setActiveServerJobId(null);
           if (job.status === 'error' && job.error) {
-            setUploadError(job.error);
+            const rawErr = String(job.error);
+            const cleanErr =
+              rawErr.includes('429') || rawErr.includes('RESOURCE_EXHAUSTED') || rawErr.includes('{"error"')
+                ? 'لۆدەکا زۆر ل سەر مۆدێلێ ئێکێ هەبوو — سیستەم هاتە گوهۆڕین بۆ مۆدێلێ یەدەک، تکایە دوگمەیا وەرگێرانێ جارەکا دی لێبدە.'
+                : rawErr;
+            setUploadError(cleanErr);
           }
         }
       } catch {
@@ -525,19 +540,19 @@ export default function BadiniBookTranslatorPage() {
     };
   }, [activeServerJobId]);
 
-  // Save custom books whenever updated
+  // Save custom books whenever updated (after hydration)
   useEffect(() => {
+    if (!isStorageHydratedRef.current) return;
     try {
-      if (customBooks.length > 0) {
-        localStorage.setItem(STORAGE_KEY_BOOKS, JSON.stringify(customBooks));
-      }
+      localStorage.setItem(STORAGE_KEY_BOOKS, JSON.stringify(customBooks));
     } catch {
       // Ignore storage quota errors
     }
   }, [customBooks]);
 
-  // Persist Qawaid pages and audio tracks whenever updated
+  // Persist Qawaid pages and audio tracks whenever updated (after hydration)
   useEffect(() => {
+    if (!isStorageHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEY_QAWAID_FULL_PAGES, JSON.stringify(qawaidBookPages));
       localStorage.setItem(STORAGE_KEY_QAWAID_TRACKS, JSON.stringify(qawaidAudioTracks));
@@ -546,8 +561,9 @@ export default function BadiniBookTranslatorPage() {
     }
   }, [qawaidBookPages, qawaidAudioTracks]);
 
-  // Persist Shakhsiya Qawiya pages and audio tracks whenever updated
+  // Persist Shakhsiya Qawiya pages and audio tracks whenever updated (after hydration)
   useEffect(() => {
+    if (!isStorageHydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEY_SHAKHSIYA_FULL_PAGES, JSON.stringify(shakhsiyaBookPages));
       localStorage.setItem(STORAGE_KEY_SHAKHSIYA_TRACKS, JSON.stringify(shakhsiyaAudioTracks));
@@ -912,6 +928,37 @@ export default function BadiniBookTranslatorPage() {
     setSelectedAudioFiles((prev) => prev.filter((_, idx) => idx !== idxToRemove));
   };
 
+  const formatFriendlyError = (err: unknown, defaultMsg: string): string => {
+    if (!err) return defaultMsg;
+    const raw = err instanceof Error ? err.message : String(err);
+    const lower = raw.toLowerCase();
+    if (
+      lower.includes('failed to fetch') ||
+      lower.includes('networkerror') ||
+      lower.includes('load failed')
+    ) {
+      return 'پەیوەندی دگەل سێرڤەری بۆ چرکەیەکێ لاواز بوو، تکایە دوگمەیێ جارەکا دی لێبدە.';
+    }
+    if (
+      raw.includes('429') ||
+      raw.includes('RESOURCE_EXHAUSTED') ||
+      raw.includes('quota') ||
+      raw.includes('{"error"')
+    ) {
+      return 'لۆدەکا زۆر ل سەر مۆدێلێ ئێکێ هەبوو — سیستەم هاتە گوهۆڕین بۆ مۆدێلێ یەدەک، تکایە دوگمەیێ جارەکا دی لێبدە.';
+    }
+    if (
+      raw.includes('Unterminated string') ||
+      raw.includes('Unexpected token') ||
+      raw.includes('Unexpected end of JSON') ||
+      raw.includes('JSON at position') ||
+      raw.includes('SyntaxError')
+    ) {
+      return 'ئەڤ پشکە یا درێژ بوو — سیستەم دێ ب پشکێن هویرتر نڤیسیت، تکایە دوگمەیێ جارەکا دی لێبدە.';
+    }
+    return raw;
+  };
+
   // Safe JSON parser so proxy HTML errors (413/502/504) never crash with "Unexpected token '<'"
   const safeParseJson = async (res: Response) => {
     const rawText = await res.text();
@@ -925,7 +972,18 @@ export default function BadiniBookTranslatorPage() {
     }
   };
 
-  // Upload a File or Uint8Array in small 1.8 MB chunks so no HTTP request ever exceeds proxy body limits
+  const uint8SliceToBase64 = (slice: Uint8Array): string => {
+    let binary = '';
+    const step = 0x8000;
+    for (let i = 0; i < slice.length; i += step) {
+      const sub = slice.subarray(i, Math.min(slice.length, i + step));
+      binary += String.fromCharCode.apply(null, Array.from(sub));
+    }
+    return btoa(binary);
+  };
+
+  // Upload a File or Uint8Array in compact 350 KB JSON chunks with 5x automatic retry per chunk
+  // so no HTTP request ever exceeds proxy body limits or fails with "Failed to fetch"
   const uploadBufferInChunks = async (
     endpoint: string,
     bytes: Uint8Array,
@@ -933,33 +991,67 @@ export default function BadiniBookTranslatorPage() {
     mimeType: string,
     onChunkProgress?: (sentChunks: number, totalChunks: number) => void
   ): Promise<string> => {
-    const CHUNK_SIZE = 1800 * 1024; // 1.8 MB per chunk
+    const CHUNK_SIZE = 350 * 1024; // 350 KB binary (~466 KB base64 JSON, well below all 1MB proxy limits)
     const totalChunks = Math.max(1, Math.ceil(bytes.byteLength / CHUNK_SIZE));
     const uploadId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    for (let c = 0; c < totalChunks; c++) {
-      const slice = bytes.subarray(c * CHUNK_SIZE, Math.min(bytes.byteLength, (c + 1) * CHUNK_SIZE));
-      const chunkForm = new FormData();
-      chunkForm.append('action', 'upload-chunk');
-      chunkForm.append('uploadId', uploadId);
-      chunkForm.append('chunkIndex', String(c));
-      chunkForm.append('totalChunks', String(totalChunks));
-      chunkForm.append('fileName', fileName);
-      chunkForm.append('mimeType', mimeType);
-      chunkForm.append('chunk', new Blob([slice as unknown as BlobPart], { type: mimeType }), fileName);
+    let completedChunks = 0;
+    const CONCURRENCY = 3;
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        body: chunkForm,
-      });
-      const data = await safeParseJson(res);
-      if (!res.ok || data.error) {
-        throw new Error(data.error || 'شاشی د هنارتنا پشکا فایلێ دا چێبوو');
+    for (let startIdx = 0; startIdx < totalChunks; startIdx += CONCURRENCY) {
+      const batchIndices: number[] = [];
+      for (let c = startIdx; c < Math.min(totalChunks, startIdx + CONCURRENCY); c++) {
+        batchIndices.push(c);
       }
-      if (onChunkProgress) {
-        onChunkProgress(c + 1, totalChunks);
-      }
+
+      await Promise.all(
+        batchIndices.map(async (c) => {
+          const slice = bytes.subarray(
+            c * CHUNK_SIZE,
+            Math.min(bytes.byteLength, (c + 1) * CHUNK_SIZE)
+          );
+          const chunkBase64 = uint8SliceToBase64(slice);
+
+          let lastChunkErr: unknown = null;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            try {
+              const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  action: 'upload-chunk',
+                  uploadId,
+                  chunkIndex: c,
+                  totalChunks,
+                  fileName,
+                  mimeType,
+                  chunkBase64,
+                }),
+              });
+              const data = await safeParseJson(res);
+              if (!res.ok || data.error) {
+                throw new Error(data.error || 'شاشی د هنارتنا پشکا فایلێ دا چێبوو');
+              }
+              lastChunkErr = null;
+              break;
+            } catch (err) {
+              lastChunkErr = err;
+              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+            }
+          }
+
+          if (lastChunkErr) {
+            throw lastChunkErr;
+          }
+
+          completedChunks++;
+          if (onChunkProgress) {
+            onChunkProgress(completedChunks, totalChunks);
+          }
+        })
+      );
     }
+
     return uploadId;
   };
 
@@ -1013,57 +1105,101 @@ export default function BadiniBookTranslatorPage() {
           }
         );
 
-        const startForm = new FormData();
-        startForm.append('action', 'start-job');
-        startForm.append('uploadId', uploadId);
-        startForm.append('fileName', file.name);
-        startForm.append('mimeType', file.type || 'audio/mp4');
-        startForm.append('mode', fileMode);
-        startForm.append('startPageNumber', String(startPageNum));
-        startForm.append(
-          'bookTitle',
-          audioBookTitleInput.trim() ||
-            existingBook?.title ||
-            cleanFileName ||
-            'پەرتووکا دەنگی یا رێکخستی'
-        );
-        startForm.append('lessonTitle', computedLessonTitle);
-        startForm.append('speakerName', audioSpeakerInput.trim() || 'مامۆستا مەلا رەمەزان');
+        let startData: Record<string, unknown> | null = null;
+        let lastStartErr: unknown = null;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            const startRes = await fetch('/api/audio-to-book', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'start-job',
+                uploadId,
+                fileName: file.name,
+                mimeType: file.type || 'audio/mp4',
+                mode: fileMode,
+                startPageNumber: startPageNum,
+                bookTitle:
+                  audioBookTitleInput.trim() ||
+                  existingBook?.title ||
+                  cleanFileName ||
+                  'پەرتووکا دەنگی یا رێکخستی',
+                lessonTitle: computedLessonTitle,
+                speakerName: audioSpeakerInput.trim() || 'مامۆستا مەلا رەمەزان',
+              }),
+            });
+            const parsedStart = await safeParseJson(startRes);
+            if (!startRes.ok || parsedStart.error) {
+              throw new Error(parsedStart.error || 'شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
+            }
+            startData = parsedStart;
+            lastStartErr = null;
+            break;
+          } catch (err) {
+            lastStartErr = err;
+            await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+          }
+        }
 
-        const startRes = await fetch('/api/audio-to-book', {
-          method: 'POST',
-          body: startForm,
-        });
-        const startData = await safeParseJson(startRes);
-        if (!startRes.ok || startData.error) {
-          throw new Error(startData.error || 'شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
+        if (!startData) {
+          throw lastStartErr || new Error('شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
         }
 
         let returnedPages: BookPageData[] = [];
+        const startJobObj = startData.job as { id?: string } | undefined;
 
         if (Array.isArray(startData.pages) && startData.pages.length > 0) {
           returnedPages = startData.pages as BookPageData[];
-        } else if (startData.job?.id) {
-          const jobId = startData.job.id as string;
-          // Poll fast background job every 1.2s so long audio files never hit HTTP timeout
+        } else if (startJobObj?.id) {
+          const jobId = startJobObj.id;
+          let consecutivePollErrors = 0;
+          // Poll fast background job every 1.4s with try/catch resilience so transient network blips never fail
           while (true) {
-            await new Promise((r) => setTimeout(r, 1200));
-            const pollRes = await fetch(`/api/audio-to-book?jobId=${encodeURIComponent(jobId)}`, {
-              cache: 'no-store',
-            });
-            const pollData = await safeParseJson(pollRes);
-            const job = pollData?.job;
-            if (!job) continue;
+            await new Promise((r) => setTimeout(r, 1400));
+            try {
+              const pollRes = await fetch(`/api/audio-to-book?jobId=${encodeURIComponent(jobId)}`, {
+                cache: 'no-store',
+              });
+              if (!pollRes.ok) {
+                consecutivePollErrors++;
+                if (consecutivePollErrors > 25) {
+                  throw new Error('پەیوەندی دگەل سێرڤەری پچیا، تکایە دووبارە هەول بدە.');
+                }
+                continue;
+              }
+              const pollData = await safeParseJson(pollRes);
+              consecutivePollErrors = 0;
+              const job = pollData?.job;
+              if (!job) continue;
 
-            if (job.statusMessage) {
-              setAudioConvertStatus(job.statusMessage);
-            }
-            if (job.status === 'completed' && Array.isArray(job.pages) && job.pages.length > 0) {
-              returnedPages = job.pages as BookPageData[];
-              break;
-            }
-            if (job.status === 'error' || job.status === 'stopped') {
-              throw new Error(job.error || job.statusMessage || 'شاشی د نڤیسینا دەنگی دا چێبوو');
+              if (job.statusMessage) {
+                setAudioConvertStatus(job.statusMessage);
+              }
+              if (job.status === 'completed' && Array.isArray(job.pages) && job.pages.length > 0) {
+                returnedPages = job.pages as BookPageData[];
+                break;
+              }
+              if (job.status === 'error' || job.status === 'stopped') {
+                throw new Error(
+                  formatFriendlyError(
+                    job.error || job.statusMessage,
+                    'شاشی د نڤیسینا دەنگی دا چێبوو'
+                  )
+                );
+              }
+            } catch (pollErr) {
+              // If the job itself reported a terminal error, rethrow it
+              if (
+                pollErr instanceof Error &&
+                !pollErr.message.toLowerCase().includes('failed to fetch') &&
+                !pollErr.message.includes('پەیوەندی دگەل سێرڤەری بۆ چرکەیەکێ لاواز بوو')
+              ) {
+                throw pollErr;
+              }
+              consecutivePollErrors++;
+              if (consecutivePollErrors > 25) {
+                throw new Error('پەیوەندی دگەل سێرڤەری بۆ دەمەکێ درێژ لاواز بوو، تکایە دووبارە هەول بدە.');
+              }
             }
           }
         }
@@ -1174,7 +1310,7 @@ export default function BadiniBookTranslatorPage() {
       );
     } catch (err: unknown) {
       setAudioConvertError(
-        err instanceof Error ? err.message : 'شاشی د گوهۆڕینا دەنگی بۆ پەرتووک دا چێبوو'
+        formatFriendlyError(err, 'شاشی د گوهۆڕینا دەنگی بۆ پەرتووک دا چێبوو')
       );
     } finally {
       setIsConvertingAudio(false);
@@ -1337,25 +1473,45 @@ export default function BadiniBookTranslatorPage() {
         }
       );
 
-      const formData = new FormData();
-      formData.append('action', 'start');
-      formData.append('uploadId', uploadId);
-      formData.append('fileName', selectedPdfFile.name);
-      formData.append('bookTitle', bookTitle);
-      formData.append('startPage', String(startPage));
-      formData.append('endPage', String(endPage));
-
-      const res = await fetch('/api/translation-jobs', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = await safeParseJson(res);
-      if (!res.ok || data.error || !data.job) {
-        throw new Error(data.error || 'شاشی د دەستپێکرنا وەرگێرانا پاشخانەیی دا چێبوو');
+      let data: Record<string, unknown> | null = null;
+      let lastStartErr: unknown = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          const res = await fetch('/api/translation-jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'start',
+              uploadId,
+              fileName: selectedPdfFile.name,
+              bookTitle,
+              startPage,
+              endPage,
+            }),
+          });
+          const parsed = await safeParseJson(res);
+          if (!res.ok || parsed.error || !parsed.job) {
+            throw new Error(parsed.error || 'شاشی د دەستپێکرنا وەرگێرانا پاشخانەیی دا چێبوو');
+          }
+          data = parsed;
+          lastStartErr = null;
+          break;
+        } catch (err) {
+          lastStartErr = err;
+          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        }
       }
 
-      const startedJob = data.job;
+      if (!data || !data.job) {
+        throw lastStartErr || new Error('شاشی د دەستپێکرنا وەرگێرانا پاشخانەیی دا چێبوو');
+      }
+
+      const startedJob = data.job as {
+        id: string;
+        bookId: string;
+        createdAt: string;
+        statusMessage: string;
+      };
       const newBook: BookProject = {
         id: startedJob.bookId,
         title: bookTitle,
@@ -1377,7 +1533,7 @@ export default function BadiniBookTranslatorPage() {
         status: startedJob.statusMessage,
       });
     } catch (err: unknown) {
-      setUploadError(err instanceof Error ? err.message : 'شاشی د وەرگێرانا پەرتووکێ دا چێبوو');
+      setUploadError(formatFriendlyError(err, 'شاشی د وەرگێرانا پەرتووکێ دا چێبوو'));
       setIsTranslatingUpload(false);
     }
   };
@@ -1428,8 +1584,12 @@ export default function BadiniBookTranslatorPage() {
     }
   };
 
-  // Handle interactive Chat ("گەل باخڤە") to fix errors or discuss any page
-  const handleSendChatMessage = async (e?: React.FormEvent, presetPrompt?: string) => {
+  // Handle interactive Chat ("گەل باخڤە") to fix errors or discuss any page (ultra-fast delta patching)
+  const handleSendChatMessage = async (
+    e?: React.FormEvent,
+    presetPrompt?: string,
+    overridePageNumber?: number
+  ) => {
     if (e) e.preventDefault();
     const messageText = (presetPrompt ?? chatInput).trim();
     if (!messageText || isChatLoading) return;
@@ -1437,8 +1597,8 @@ export default function BadiniBookTranslatorPage() {
     if (!presetPrompt) setChatInput('');
 
     const mentionedPage = extractMentionedPageNumber(messageText, maxPageCount);
-    const targetPageNum = mentionedPage || currentPage;
-    if (mentionedPage && mentionedPage !== currentPage) {
+    const targetPageNum = overridePageNumber || mentionedPage || currentPage;
+    if (mentionedPage && mentionedPage !== currentPage && !overridePageNumber) {
       setCurrentPage(mentionedPage);
     }
 
@@ -1451,8 +1611,14 @@ export default function BadiniBookTranslatorPage() {
       pageNumber: targetPageNum,
     };
 
+    const recentHistoryPayload = chatMessages.slice(-4).map((m) => ({
+      role: m.role,
+      text: m.text,
+    }));
+
     setChatMessages((prev) => [...prev, userMsg]);
     setIsChatLoading(true);
+    setEditorStatusBanner(null);
 
     try {
       const res = await fetch('/api/chat-fix-page', {
@@ -1462,16 +1628,20 @@ export default function BadiniBookTranslatorPage() {
           userMessage: messageText,
           currentPage: targetPageObj,
           bookTitle: activeBook.headerTitle,
+          history: recentHistoryPayload,
         }),
       });
 
-      const data = await res.json();
+      const data = await safeParseJson(res);
       if (!res.ok || data.error) {
         throw new Error(data.error || 'شاشی د بەرسڤدانێ دا چێبوو');
       }
 
       if (data.didModifyPage && data.updatedPage) {
         updatePageInActiveBook(targetPageNum, () => data.updatedPage as BookPageData);
+        setEditorStatusBanner(
+          data.reply || `لاپەرێ ${toEasternArabicNumerals(targetPageNum)} ب لەزاتی هاتە راستڤەکرن!`
+        );
       }
 
       const assistantMsg: ChatMessage = {
@@ -1485,17 +1655,16 @@ export default function BadiniBookTranslatorPage() {
 
       setChatMessages((prev) => [...prev, assistantMsg]);
     } catch (err: unknown) {
+      const cleanMsg = formatFriendlyError(err, 'ببورە، شاشیەک چێبوو. جارەکا دی هەول بدە.');
       setChatMessages((prev) => [
         ...prev,
         {
           id: `err-${Date.now()}`,
           role: 'assistant',
-          text:
-            err instanceof Error
-              ? `شاشی: ${err.message}`
-              : 'ببورە، شاشیەک چێبوو. جارەکا دی هەول بدە.',
+          text: `شاشی: ${cleanMsg}`,
         },
       ]);
+      setAiError(cleanMsg);
     } finally {
       setIsChatLoading(false);
     }
@@ -1514,6 +1683,7 @@ export default function BadiniBookTranslatorPage() {
         text: `لاپەرێ ${toEasternArabicNumerals(targetPage)} زڤڕی سەر رەوشا خۆ یا بەرێ.`,
       },
     ]);
+    setEditorStatusBanner(`لاپەرێ ${toEasternArabicNumerals(targetPage)} زڤڕی سەر رەوشا خۆ یا بەرێ.`);
   };
 
   // Editing page text blocks manually
@@ -1535,6 +1705,160 @@ export default function BadiniBookTranslatorPage() {
     });
   };
 
+  const handleToggleBlockType = (pageNumber: number, blockIdx: number) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const nextBlocks = p.blocks.map((b, idx) => {
+        if (idx !== blockIdx) return b;
+        if (b.type === 'paragraph') {
+          return {
+            type: 'heading' as const,
+            text: b.text,
+            align: 'center' as const,
+            size: 'md' as const,
+            color: 'red' as const,
+          };
+        }
+        if (b.type === 'heading') {
+          return {
+            type: 'paragraph' as const,
+            text: b.text,
+            align: 'justify' as const,
+            color: 'black' as const,
+          };
+        }
+        return b;
+      });
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
+  const handleChangeBlockAlign = (
+    pageNumber: number,
+    blockIdx: number,
+    align: 'justify' | 'right' | 'center'
+  ) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const nextBlocks = p.blocks.map((b, idx) => {
+        if (idx !== blockIdx) return b;
+        if (b.type === 'paragraph') {
+          return { ...b, align };
+        }
+        if (b.type === 'heading') {
+          return { ...b, align: align === 'right' ? ('right' as const) : ('center' as const) };
+        }
+        return b;
+      });
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
+  const handleChangeBlockColor = (pageNumber: number, blockIdx: number, color: 'black' | 'red') => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const nextBlocks = p.blocks.map((b, idx) => {
+        if (idx !== blockIdx) return b;
+        if (b.type === 'paragraph' || b.type === 'heading') {
+          return { ...b, color };
+        }
+        return b;
+      });
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
+  const handleInsertTagInBlock = (
+    pageNumber: number,
+    blockIdx: number,
+    tagType: 'red' | 'quran' | 'bold'
+  ) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const nextBlocks = p.blocks.map((b, idx) => {
+        if (idx !== blockIdx) return b;
+        if (b.type !== 'paragraph' && b.type !== 'heading') return b;
+        const snippet =
+          tagType === 'red'
+            ? ' {{r:دەقێ سۆر ل ڤێرێ}} '
+            : tagType === 'quran'
+            ? ' ﴿ئایەتا قورئانێ﴾ '
+            : ' **دەقێ ستوور** ';
+        return { ...b, text: `${b.text}${snippet}` };
+      });
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
+  const handleAddBlockToPage = (
+    pageNumber: number,
+    blockType: 'paragraph' | 'heading',
+    afterIdx?: number
+  ) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const newBlock =
+        blockType === 'heading'
+          ? {
+              type: 'heading' as const,
+              text: 'سەردێڕێ نوی ل ڤێرێ بنڤیسە',
+              align: 'center' as const,
+              size: 'md' as const,
+              color: 'red' as const,
+            }
+          : {
+              type: 'paragraph' as const,
+              text: 'پەرەگرافێ نوی ل ڤێرێ بنڤیسە...',
+              align: 'justify' as const,
+              color: 'black' as const,
+            };
+      const nextBlocks = [...p.blocks];
+      if (typeof afterIdx === 'number' && afterIdx >= 0 && afterIdx < nextBlocks.length) {
+        nextBlocks.splice(afterIdx + 1, 0, newBlock);
+      } else {
+        nextBlocks.push(newBlock);
+      }
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
+  const handleDeleteBlockFromPage = (pageNumber: number, blockIdx: number) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      if (p.blocks.length <= 1) return p;
+      const nextBlocks = p.blocks.filter((_, idx) => idx !== blockIdx);
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
+  const handleMoveBlockInPage = (
+    pageNumber: number,
+    blockIdx: number,
+    direction: 'up' | 'down'
+  ) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const targetIdx = direction === 'up' ? blockIdx - 1 : blockIdx + 1;
+      if (targetIdx < 0 || targetIdx >= p.blocks.length) return p;
+      const nextBlocks = [...p.blocks];
+      const temp = nextBlocks[blockIdx];
+      nextBlocks[blockIdx] = nextBlocks[targetIdx];
+      nextBlocks[targetIdx] = temp;
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
+  const updateCoverField = (
+    pageNumber: number,
+    blockIdx: number,
+    field: 'kicker' | 'titleLines' | 'compilerLabel' | 'compilerName' | 'verse' | 'verseRef',
+    value: string
+  ) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const nextBlocks = p.blocks.map((b, idx) => {
+        if (idx !== blockIdx || b.type !== 'cover') return b;
+        if (field === 'titleLines') {
+          return { ...b, titleLines: value.split('\n') };
+        }
+        return { ...b, [field]: value };
+      });
+      return { ...p, blocks: nextBlocks };
+    });
+  };
+
   const updateFootnoteText = (pageNumber: number, fnIdx: number, newText: string) => {
     updatePageInActiveBook(pageNumber, (p) => {
       if (!p.footnotes) return p;
@@ -1543,30 +1867,141 @@ export default function BadiniBookTranslatorPage() {
     });
   };
 
-  const handleAiRefineBlock = async (pageNumber: number, blockIdx: number, currentText: string) => {
+  const handleAddFootnoteToPage = (pageNumber: number) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      const nextFn = [...(p.footnotes || []), '(*) پەراوێزا نوی ل ڤێرێ بنڤیسە...'];
+      return { ...p, footnotes: nextFn };
+    });
+  };
+
+  const handleDeleteFootnoteFromPage = (pageNumber: number, fnIdx: number) => {
+    updatePageInActiveBook(pageNumber, (p) => {
+      if (!p.footnotes) return p;
+      const nextFn = p.footnotes.filter((_, idx) => idx !== fnIdx);
+      return { ...p, footnotes: nextFn };
+    });
+  };
+
+  // Fast Find & Replace on either the current page or across ALL pages of the active book
+  const handleFindAndReplace = (scope: 'page' | 'book', targetPageNum: number) => {
+    const findStr = editorFindText;
+    const replaceStr = editorReplaceText;
+    if (!findStr.trim()) return;
+
+    let replacedPagesCount = 0;
+
+    const replaceInPageObj = (p: BookPageData): BookPageData => {
+      let pageChanged = false;
+      const rep = (s: string) => {
+        if (!s || !s.includes(findStr)) return s;
+        pageChanged = true;
+        return s.split(findStr).join(replaceStr);
+      };
+      const nextBlocks = p.blocks.map((b) => {
+        if (b.type === 'paragraph' || b.type === 'heading') {
+          return { ...b, text: rep(b.text) };
+        }
+        if (b.type === 'cover') {
+          return {
+            ...b,
+            kicker: rep(b.kicker),
+            titleLines: b.titleLines.map(rep),
+            compilerLabel: b.compilerLabel ? rep(b.compilerLabel) : b.compilerLabel,
+            compilerName: b.compilerName ? rep(b.compilerName) : b.compilerName,
+            verse: rep(b.verse),
+            verseRef: rep(b.verseRef),
+          };
+        }
+        if (b.type === 'epigraph') {
+          return { ...b, intro: rep(b.intro), verse: rep(b.verse), verseRef: rep(b.verseRef) };
+        }
+        if (b.type === 'bismillah') {
+          return { ...b, bismillah: rep(b.bismillah), subLines: b.subLines.map(rep) };
+        }
+        return b;
+      });
+      const nextFootnotes = p.footnotes ? p.footnotes.map(rep) : p.footnotes;
+      if (pageChanged) replacedPagesCount++;
+      return pageChanged ? { ...p, blocks: nextBlocks, footnotes: nextFootnotes } : p;
+    };
+
+    if (scope === 'page') {
+      updatePageInActiveBook(targetPageNum, replaceInPageObj);
+      setEditorStatusBanner(
+        replacedPagesCount > 0
+          ? `«${findStr}» هاتە گوهۆڕین بۆ «${replaceStr}» ل سەر لاپەرێ ${toEasternArabicNumerals(targetPageNum)}.`
+          : `پەیڤا «${findStr}» ل سەر لاپەرێ ${toEasternArabicNumerals(targetPageNum)} نەهاتە دیتن.`
+      );
+    } else {
+      for (const p of pages) {
+        updatePageInActiveBook(p.pageNumber, replaceInPageObj);
+      }
+      setEditorStatusBanner(
+        replacedPagesCount > 0
+          ? `«${findStr}» هاتە گوهۆڕین بۆ «${replaceStr}» د ناڤ ${toEasternArabicNumerals(
+              replacedPagesCount
+            )} لاپەرێن پەرتووکێ دا!`
+          : `پەیڤا «${findStr}» د ناڤ پەرتووکێ دا نەهاتە دیتن.`
+      );
+    }
+  };
+
+  // Reset a single page of a built-in book back to its original factory state
+  const handleResetPageToOriginal = (pageNumber: number) => {
+    let origPage: BookPageData | undefined;
+    if (activeBook.id === SHAKHSIYA_QAWIYA_BOOK_ID) {
+      origPage = SHAKHSIYA_QAWIYA_PAGES.find((p) => p.pageNumber === pageNumber);
+    } else if (activeBook.id === QAWAID_LESSON1_BOOK_ID) {
+      origPage = QAWAID_ARBA_LESSON1_PAGES.find((p) => p.pageNumber === pageNumber);
+    } else if (activeBook.id === DEFAULT_BOOK_ID) {
+      origPage = ALL_BOOK_PAGES.find((p) => p.pageNumber === pageNumber);
+    }
+    if (origPage) {
+      updatePageInActiveBook(pageNumber, () => origPage!);
+      setEditorStatusBanner(
+        `لاپەرێ ${toEasternArabicNumerals(pageNumber)} زڤڕی سەر نڤیسینا خۆ یا رەسەن.`
+      );
+    }
+  };
+
+  const handleAiRefineBlock = async (
+    pageNumber: number,
+    blockIdx: number,
+    currentText: string,
+    mode: 'spelling' | 'fluent' = 'fluent'
+  ) => {
     setAiRefiningIdx(blockIdx);
+    setAiRefiningMode(mode);
     setAiError(null);
     try {
+      const instruction =
+        mode === 'spelling'
+          ? 'بتنێ خەلەتیێن رێنڤیسێ (إملاء) و خاڵبەندیێ د ڤی دەقێ بادینی دا راستڤەکە بێی کو چ پەیڤ یان شێوازێ ئاخفتنا مامۆستای بگوهۆڕی، و نیشانێن رەنگێ سۆر {{r:...}} و ئایەتێن ﴿...﴾ وەکی خۆ بپارێزە.'
+          : 'زمانێ بادینی هێشتا رەوانتر و رەسەنتر بکە و زاراڤێن شەرعی بپارێزە. ئایەتێن قورئانێ ﴿...﴾ ب عەرەبی بهێلە بێ تەفسیر و نیشانێن {{r:...}} بپارێزە.';
+
       const res = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: currentText,
-          instruction:
-            'زمانێ بادینی هێشتا رەوانتر و رەسەنتر بکە و زاراڤێن شەرعی بپارێزە. ئایەتێن قورئانێ ﴿...﴾ ب عەرەبی بهێلە بێ تەفسیر.',
+          instruction,
         }),
       });
-      const data = await res.json();
+      const data = await safeParseJson(res);
       if (!res.ok || data.error) {
         throw new Error(data.error || 'شاشی د باشترکرنێ دا');
       }
       if (data.translatedText) {
         updateBlockText(pageNumber, blockIdx, data.translatedText);
+        setEditorStatusBanner(
+          `بلۆکێ ${toEasternArabicNumerals(blockIdx + 1)} ب سەرکەفتیانە هاتە راستڤەکرن!`
+        );
       }
     } catch (err: unknown) {
-      setAiError(err instanceof Error ? err.message : 'شاشی چێبوو');
+      setAiError(formatFriendlyError(err, 'شاشی چێبوو'));
     } finally {
       setAiRefiningIdx(null);
+      setAiRefiningMode(null);
     }
   };
 
@@ -1602,9 +2037,9 @@ export default function BadiniBookTranslatorPage() {
     },
     {
       id: 'chat',
-      label: '٥. گەل باخڤە',
-      shortLabel: 'گەل باخڤە',
-      icon: <MessageSquare className="w-4 h-4 shrink-0" />,
+      label: '٥. دەستکاری و گەل باخڤە',
+      shortLabel: 'دەستکاری / بۆت',
+      icon: <Edit3 className="w-4 h-4 shrink-0" />,
     },
     {
       id: 'export',
@@ -3142,27 +3577,52 @@ export default function BadiniBookTranslatorPage() {
       )}
 
       {/* =====================================================================
-          SECTION 5: INTERACTIVE CHAT & PAGE FIXER ("بەشێ ٥: گەل باخڤە")
+          SECTION 5: INTERACTIVE CHAT & DIRECT PAGE EDITOR ("بەشێ ٥: دەستکاری و گەل باخڤە")
          ===================================================================== */}
       {activeSection === 'chat' && (
         <main className="no-print flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Chat Panel (7 cols on desktop) */}
-          <div className="lg:col-span-7 bg-[#FFFDF9] border border-[#E5DEC9] rounded-2xl shadow-2xs flex flex-col overflow-hidden min-h-[540px]">
-            <div className="px-5 py-4 bg-stone-900 text-white flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
-                <div>
-                  <div className="text-sm font-bold">
-                    گەل باخڤە — راستڤەکرنا لاپەرێ {toEasternArabicNumerals(currentPage)}
-                  </div>
-                  <div className="text-[11px] text-stone-300">
-                    هەر خەلەتیەک د لاپەری دا هەبیت بێژە، ئەز دێ راستەوخۆ لاپەری بۆ تە چێکەم
-                  </div>
-                </div>
+          {/* Left/Main Panel (7 cols on desktop): Switchable between Fast Bot & Direct Block Editor */}
+          <div className="lg:col-span-7 bg-[#FFFDF9] border border-[#E5DEC9] rounded-2xl shadow-2xs flex flex-col overflow-hidden min-h-[580px]">
+            {/* Top Header with Mode Toggle & Page Stepper */}
+            <div className="px-4 sm:px-5 py-3.5 bg-stone-900 text-white flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 bg-stone-800 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setChatSubMode('bot')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                    chatSubMode === 'bot'
+                      ? 'bg-[#CC0000] text-white shadow-2xs'
+                      : 'text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>ئاخفتن دگەل بۆتێ بلەز</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChatSubMode('manual')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                    chatSubMode === 'manual'
+                      ? 'bg-[#CC0000] text-white shadow-2xs'
+                      : 'text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>دەستکاریکرنا دەستی یا لاپەری</span>
+                </button>
               </div>
 
-              {/* Quick Page Selector inside Chat */}
+              {/* Quick Page Stepper inside Chat/Editor */}
               <div className="flex items-center gap-1.5 bg-stone-800 px-2.5 py-1 rounded-xl text-xs">
+                <button
+                  type="button"
+                  disabled={currentPage <= 1}
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  className="p-1 text-stone-300 hover:text-white disabled:opacity-40 cursor-pointer"
+                  title="لاپەرێ بەرێ"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
                 <span className="text-stone-300">لاپەر:</span>
                 <input
                   type="number"
@@ -3175,131 +3635,424 @@ export default function BadiniBookTranslatorPage() {
                   }}
                   className="w-12 text-center font-bold bg-stone-900 text-white border border-stone-700 rounded py-0.5 tabular-nums"
                 />
+                <span className="text-stone-400 text-[11px]">
+                  / {toEasternArabicNumerals(maxPageCount)}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPage >= maxPageCount}
+                  onClick={() => setCurrentPage((p) => Math.min(maxPageCount, p + 1))}
+                  className="p-1 text-stone-300 hover:text-white disabled:opacity-40 cursor-pointer"
+                  title="لاپەرێ پاشتر"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
 
-            {/* Quick Action Suggestions */}
-            <div className="px-4 py-2.5 bg-[#FAF8F3] border-b border-[#E5DEC9] flex flex-wrap gap-2">
+            {/* Instant Find & Replace Bar (0.01s speed across page or entire book) */}
+            <div className="px-4 py-2.5 bg-[#FAF8F3] border-b border-[#E5DEC9] flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-bold text-stone-700 shrink-0">گوهۆڕینا بلەز:</span>
+              <input
+                type="text"
+                value={editorFindText}
+                onChange={(e) => setEditorFindText(e.target.value)}
+                placeholder="پەیڤا شاش / کەڤن..."
+                className="px-2.5 py-1.5 bg-white border border-[#DED6C3] rounded-lg text-xs w-28 sm:w-36 focus:outline-none focus:border-[#9A3412]"
+              />
+              <span className="text-stone-400">←</span>
+              <input
+                type="text"
+                value={editorReplaceText}
+                onChange={(e) => setEditorReplaceText(e.target.value)}
+                placeholder="پەیڤا راست / نوی..."
+                className="px-2.5 py-1.5 bg-white border border-[#DED6C3] rounded-lg text-xs w-28 sm:w-36 focus:outline-none focus:border-[#9A3412]"
+              />
               <button
                 type="button"
-                disabled={isChatLoading}
-                onClick={() =>
-                  handleSendChatMessage(
-                    undefined,
-                    'ئەگەر چ تەفسیرێن کوردی ل بن ئایەتێن قورئانێ هەبن د ڤی لاپەری دا ژێببە و ئایەتان بتنێ ب عەرەبی بهێلە.'
-                  )
-                }
-                className="px-3 py-1.5 text-xs bg-white hover:bg-stone-100 text-stone-700 border border-[#DED6C3] rounded-xl transition-colors cursor-pointer"
+                disabled={!editorFindText.trim()}
+                onClick={() => handleFindAndReplace('page', currentPage)}
+                className="px-2.5 py-1.5 bg-stone-900 hover:bg-stone-800 disabled:opacity-40 text-white font-semibold rounded-lg transition-colors cursor-pointer shrink-0"
               >
-                ئایەتان ب عەرەبی بێ تەفسیر بهێلە
+                ل ڤی لاپەری بگوهۆڕە
               </button>
               <button
                 type="button"
-                disabled={isChatLoading}
-                onClick={() =>
-                  handleSendChatMessage(
-                    undefined,
-                    'زمانێ ڤی لاپەری بکە بادینیەکا هێشتا رەسەنتر و رەوانتر و خەلەتیێن رێنڤیسێ چێکە.'
-                  )
-                }
-                className="px-3 py-1.5 text-xs bg-white hover:bg-stone-100 text-stone-700 border border-[#DED6C3] rounded-xl transition-colors cursor-pointer"
+                disabled={!editorFindText.trim()}
+                onClick={() => handleFindAndReplace('book', currentPage)}
+                className="px-2.5 py-1.5 bg-[#9A3412] hover:bg-[#7C2D12] disabled:opacity-40 text-white font-semibold rounded-lg transition-colors cursor-pointer shrink-0"
               >
-                بادینیا ڤی لاپەری رەوانتر بکە
+                ل هەمی پەرتووکێ بگوهۆڕە
               </button>
+            </div>
+
+            {editorStatusBanner && (
+              <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 font-semibold">
+                  <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>{editorStatusBanner}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditorStatusBanner(null)}
+                  className="text-emerald-700 hover:text-emerald-950 text-[11px] cursor-pointer"
+                >
+                  داخستن
+                </button>
+              </div>
+            )}
+
+            {chatSubMode === 'bot' ? (
+              <>
+                {/* 1-Click Fast Bot Presets */}
+                <div className="px-4 py-2.5 bg-[#FFFDF9] border-b border-[#E5DEC9] flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    disabled={isChatLoading}
+                    onClick={() =>
+                      handleSendChatMessage(
+                        undefined,
+                        'خەلەتیێن رێنڤیسێ (إملاء) و خاڵبەندیێ ل ڤی لاپەری ب لەزاتی راستڤەکە بێی گوهۆڕینا شێوازێ ئاخفتنا مامۆستای.'
+                      )
+                    }
+                    className="px-2.5 py-1.5 text-[11px] font-semibold bg-[#FFF5F0] hover:bg-[#FFE8DC] text-[#9A3412] border border-[#9A3412]/30 rounded-xl transition-colors cursor-pointer"
+                  >
+                    ⚡ راستڤەکرنا خەلەتیێن رێنڤیسێ
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isChatLoading}
+                    onClick={() =>
+                      handleSendChatMessage(
+                        undefined,
+                        'ئایەتێن قورئانێ د ناڤ ﴿...﴾ و مەتن و فەرموودەیێن عەرەبی د ناڤ {{r:...}} دا ب رەنگێ سۆر جودا بکە.'
+                      )
+                    }
+                    className="px-2.5 py-1.5 text-[11px] bg-white hover:bg-stone-100 text-stone-700 border border-[#DED6C3] rounded-xl transition-colors cursor-pointer"
+                  >
+                    ئایەت و فەرموودەیان سۆر بکە
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isChatLoading}
+                    onClick={() =>
+                      handleSendChatMessage(
+                        undefined,
+                        'ئەگەر چ تەفسیرێن کوردی ل بن ئایەتێن قورئانێ هەبن د ڤی لاپەری دا ژێببە و ئایەتان بتنێ ب عەرەبی بهێلە.'
+                      )
+                    }
+                    className="px-2.5 py-1.5 text-[11px] bg-white hover:bg-stone-100 text-stone-700 border border-[#DED6C3] rounded-xl transition-colors cursor-pointer"
+                  >
+                    ئایەتان بێ تەفسیر بهێلە
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isChatLoading}
+                    onClick={() =>
+                      handleSendChatMessage(
+                        undefined,
+                        'زمانێ ڤی لاپەری بکە بادینیەکا هێشتا رەسەنتر و رەوانتر و خەلەتیێن رێزمانێ چێکە.'
+                      )
+                    }
+                    className="px-2.5 py-1.5 text-[11px] bg-white hover:bg-stone-100 text-stone-700 border border-[#DED6C3] rounded-xl transition-colors cursor-pointer"
+                  >
+                    بادینیا لاپەری رەوانتر بکە
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingPageNumber(currentPage)}
+                    className="px-2.5 py-1.5 text-[11px] bg-stone-900 hover:bg-stone-800 text-white font-semibold rounded-xl transition-colors cursor-pointer"
+                  >
+                    ✎ ڤەکرنا دەستکاریا تەمام
+                  </button>
+                </div>
+
+                {/* Messages List */}
+                <div
+                  ref={chatScrollRef}
+                  className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3 bg-[#F7F4EE]/60 max-h-[410px]"
+                >
+                  {chatMessages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`flex flex-col ${
+                        msg.role === 'user' ? 'items-start' : 'items-end'
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[88%] rounded-2xl px-4 py-3 text-xs leading-relaxed ${
+                          msg.role === 'user'
+                            ? 'bg-stone-900 text-white'
+                            : 'bg-white border border-[#E5DEC9] text-stone-800 shadow-2xs'
+                        }`}
+                      >
+                        {msg.pageNumber && (
+                          <div
+                            className={`text-[10px] mb-1 ${
+                              msg.role === 'user' ? 'text-stone-300' : 'text-[#9A3412] font-semibold'
+                            }`}
+                          >
+                            لاپەرێ {toEasternArabicNumerals(msg.pageNumber)}
+                          </div>
+                        )}
+                        <div>{msg.text}</div>
+
+                        {msg.didModifyPage && msg.previousPageSnapshot && (
+                          <div className="mt-2 pt-2 border-t border-stone-100 flex items-center justify-between gap-2">
+                            <span className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              <span>لاپەر ب لەزاتی هاتە نوێکرن</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleUndoChatPageFix(msg)}
+                              className="text-[11px] text-stone-500 hover:text-stone-900 flex items-center gap-1 underline cursor-pointer"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>زڤڕاندن</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {isChatLoading && (
+                    <div className="flex items-center gap-2 text-xs text-[#9A3412] font-semibold px-2 py-1 bg-[#FFF5F0] rounded-xl w-fit border border-[#9A3412]/20">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#CC0000]" />
+                      <span>بۆت یێ ب شێوازێ بلەز (١-٢ چرکە) خەلەتیان راستڤە دکەت...</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Chat Input Form */}
+                <form
+                  onSubmit={(e) => handleSendChatMessage(e)}
+                  className="p-3.5 bg-white border-t border-[#E5DEC9] flex items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder={`بۆ نموونە: «پەیڤا X بکە Y» یان هەر تێبینیەک ل سەر لاپەرێ ${toEasternArabicNumerals(
+                      currentPage
+                    )}...`}
+                    className="flex-1 px-3.5 py-2.5 text-xs bg-[#FAF8F3] border border-[#DED6C3] rounded-xl focus:outline-none focus:border-[#9A3412]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isChatLoading || !chatInput.trim()}
+                    className="px-4 py-2.5 text-xs font-semibold text-white bg-[#CC0000] hover:bg-[#a30000] disabled:opacity-50 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>راستڤەکە</span>
+                  </button>
+                </form>
+              </>
+            ) : (
+              /* Direct Inline Manual Block Editor inside Section 5 */
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 max-h-[500px]">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#E5DEC9]">
+                  <span className="text-xs font-bold text-stone-800">
+                    بلۆکێن لاپەرێ {toEasternArabicNumerals(currentPage)} (هەر گوهۆڕینەک ئێکسەر دهێتە پاراستن):
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleAddBlockToPage(currentPage, 'paragraph')}
+                      className="px-2.5 py-1 text-[11px] font-semibold bg-stone-900 text-white rounded-lg cursor-pointer"
+                    >
+                      + زێدەکرنا پەرەگراف
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAddBlockToPage(currentPage, 'heading')}
+                      className="px-2.5 py-1 text-[11px] font-semibold bg-[#CC0000] text-white rounded-lg cursor-pointer"
+                    >
+                      + زێدەکرنا سەردێڕ (سۆر)
+                    </button>
+                  </div>
+                </div>
+
+                {currentPageData?.blocks.map((block, bIdx) => {
+                  if (block.type === 'cover') {
+                    return (
+                      <div
+                        key={bIdx}
+                        className="space-y-3 bg-[#FAF8F3] p-4 rounded-xl border border-[#DED6C3]"
+                      >
+                        <div className="text-xs font-bold text-[#9A3412]">
+                          دەستکاریکرنا بەرگێ پەرتووکێ (لاپەرێ ١)
+                        </div>
+                        <div className="grid grid-cols-1 gap-2.5 text-xs">
+                          <div>
+                            <label className="block text-stone-600 mb-1">دەستپێکا سەری:</label>
+                            <input
+                              type="text"
+                              value={block.kicker}
+                              onChange={(e) =>
+                                updateCoverField(currentPage, bIdx, 'kicker', e.target.value)
+                              }
+                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-stone-600 mb-1">
+                              ناڤونیشانێ پەرتووکێ (ب رەنگێ سۆر):
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={block.titleLines.join('\n')}
+                              onChange={(e) =>
+                                updateCoverField(currentPage, bIdx, 'titleLines', e.target.value)
+                              }
+                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg font-bold text-[#CC0000]"
+                            />
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-stone-600 mb-1">ناڤونیشانێ دانەری:</label>
+                              <input
+                                type="text"
+                                value={block.compilerLabel || ''}
+                                onChange={(e) =>
+                                  updateCoverField(
+                                    currentPage,
+                                    bIdx,
+                                    'compilerLabel',
+                                    e.target.value
+                                  )
+                                }
+                                className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-stone-600 mb-1">ناڤێ مامۆستای / دانەری:</label>
+                              <input
+                                type="text"
+                                value={block.compilerName || ''}
+                                onChange={(e) =>
+                                  updateCoverField(
+                                    currentPage,
+                                    bIdx,
+                                    'compilerName',
+                                    e.target.value
+                                  )
+                                }
+                                className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-stone-600 mb-1">ئایەت یان نڤیسینا خوارێ:</label>
+                            <textarea
+                              rows={2}
+                              value={block.verse}
+                              onChange={(e) =>
+                                updateCoverField(currentPage, bIdx, 'verse', e.target.value)
+                              }
+                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (block.type !== 'paragraph' && block.type !== 'heading') return null;
+
+                  return (
+                    <div
+                      key={bIdx}
+                      className="space-y-2 bg-[#FAF8F3] p-3.5 rounded-xl border border-[#DED6C3]"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-stone-800">
+                            {block.type === 'heading'
+                              ? `سەردێڕ ${toEasternArabicNumerals(bIdx + 1)}`
+                              : `پەرەگراف ${toEasternArabicNumerals(bIdx + 1)}`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleBlockType(currentPage, bIdx)}
+                            className="px-2 py-0.5 text-[11px] bg-white border border-stone-300 rounded-md hover:bg-stone-100 cursor-pointer"
+                          >
+                            بکە {block.type === 'heading' ? 'پەرەگراف' : 'سەردێڕ'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleInsertTagInBlock(currentPage, bIdx, 'red')}
+                            className="px-2 py-0.5 text-[11px] bg-red-50 text-[#CC0000] border border-red-200 rounded-md hover:bg-red-100 font-semibold cursor-pointer"
+                          >
+                            + سۆر {'{{r:...}}'}
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={aiRefiningIdx === bIdx}
+                            onClick={() =>
+                              handleAiRefineBlock(currentPage, bIdx, block.text, 'spelling')
+                            }
+                            className="px-2 py-0.5 text-[11px] bg-[#9A3412]/10 text-[#9A3412] rounded-md font-semibold hover:bg-[#9A3412]/20 cursor-pointer"
+                          >
+                            {aiRefiningIdx === bIdx ? '...' : '⚡ رێنڤیس'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleMoveBlockInPage(currentPage, bIdx, 'up')}
+                            className="px-1.5 py-0.5 text-[11px] bg-white border border-stone-300 rounded cursor-pointer"
+                            title="برنا سەری"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleMoveBlockInPage(currentPage, bIdx, 'down')}
+                            className="px-1.5 py-0.5 text-[11px] bg-white border border-stone-300 rounded cursor-pointer"
+                            title="ئینانا خوارێ"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteBlockFromPage(currentPage, bIdx)}
+                            className="px-1.5 py-0.5 text-[11px] text-red-600 hover:bg-red-50 rounded cursor-pointer"
+                            title="ژێبرنا بلۆکی"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <textarea
+                        rows={block.type === 'heading' ? 2 : 4}
+                        value={block.text}
+                        style={{ fontFamily: activeBookFont.cssFamily }}
+                        onChange={(e) => updateBlockText(currentPage, bIdx, e.target.value)}
+                        className="w-full p-2.5 text-sm sm:text-base font-book bg-white border border-stone-300 rounded-xl focus:outline-none focus:border-[#9A3412] leading-relaxed"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Live Page Preview alongside Chat/Editor (5 cols on desktop) */}
+          <div className="lg:col-span-5 flex flex-col items-center space-y-2">
+            <div className="w-full flex items-center justify-between px-2 text-xs font-semibold text-stone-600">
+              <span>پێشبینینا راستەوخۆ یا لاپەرێ {toEasternArabicNumerals(currentPage)}</span>
               <button
                 type="button"
                 onClick={() => setEditingPageNumber(currentPage)}
-                className="px-3 py-1.5 text-xs bg-[#9A3412]/10 hover:bg-[#9A3412]/20 text-[#9A3412] font-semibold rounded-xl transition-colors cursor-pointer"
+                className="text-[#9A3412] hover:underline font-bold cursor-pointer flex items-center gap-1"
               >
-                دەستکاریکرنا دەستی یا لاپەری
+                <Edit3 className="w-3.5 h-3.5" />
+                <span>ڤەکرنا پەنجەرەیا مەزن یا دەستکاریێ</span>
               </button>
-            </div>
-
-            {/* Messages List */}
-            <div
-              ref={chatScrollRef}
-              className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3 bg-[#F7F4EE]/60 max-h-[420px]"
-            >
-              {chatMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex flex-col ${
-                    msg.role === 'user' ? 'items-start' : 'items-end'
-                  }`}
-                >
-                  <div
-                    className={`max-w-[88%] rounded-2xl px-4 py-3 text-xs leading-relaxed ${
-                      msg.role === 'user'
-                        ? 'bg-stone-900 text-white'
-                        : 'bg-white border border-[#E5DEC9] text-stone-800 shadow-2xs'
-                    }`}
-                  >
-                    {msg.pageNumber && (
-                      <div
-                        className={`text-[10px] mb-1 ${
-                          msg.role === 'user' ? 'text-stone-300' : 'text-[#9A3412] font-semibold'
-                        }`}
-                      >
-                        لاپەرێ {toEasternArabicNumerals(msg.pageNumber)}
-                      </div>
-                    )}
-                    <div>{msg.text}</div>
-
-                    {msg.didModifyPage && msg.previousPageSnapshot && (
-                      <div className="mt-2 pt-2 border-t border-stone-100 flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
-                          <Check className="w-3 h-3" />
-                          <span>لاپەر هاتە نوێکرن</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleUndoChatPageFix(msg)}
-                          className="text-[11px] text-stone-500 hover:text-stone-900 flex items-center gap-1 underline cursor-pointer"
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          <span>زڤڕاندن</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-
-              {isChatLoading && (
-                <div className="flex items-center gap-2 text-xs text-stone-500 px-2">
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#9A3412]" />
-                  <span>د خزمەت دایە بۆ راستڤەکرنا لاپەری...</span>
-                </div>
-              )}
-            </div>
-
-            {/* Chat Input Form */}
-            <form
-              onSubmit={(e) => handleSendChatMessage(e)}
-              className="p-3.5 bg-white border-t border-[#E5DEC9] flex items-center gap-2"
-            >
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder={`تێبینیا خۆ ل سەر لاپەرێ ${toEasternArabicNumerals(currentPage)} بنڤیسە...`}
-                className="flex-1 px-3.5 py-2.5 text-xs bg-[#FAF8F3] border border-[#DED6C3] rounded-xl focus:outline-none focus:border-[#9A3412]"
-              />
-              <button
-                type="submit"
-                disabled={isChatLoading || !chatInput.trim()}
-                className="px-4 py-2.5 text-xs font-semibold text-white bg-[#CC0000] hover:bg-[#a30000] disabled:opacity-50 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>فرێکە</span>
-              </button>
-            </form>
-          </div>
-
-          {/* Live Page Preview alongside Chat (5 cols on desktop) */}
-          <div className="lg:col-span-5 flex flex-col items-center space-y-2">
-            <div className="text-xs font-semibold text-stone-600">
-              پێشبینینا راستەوخۆ یا لاپەرێ {toEasternArabicNumerals(currentPage)}
             </div>
             {currentPageData && (
               <BookPageSheet
@@ -3512,106 +4265,545 @@ export default function BadiniBookTranslatorPage() {
         </main>
       )}
 
-      {/* Page Editor Modal */}
+      {/* =====================================================================
+          FULL-FEATURED PAGE EDITOR MODAL WITH LIVE SIDE-BY-SIDE PREVIEW
+         ===================================================================== */}
       {editingPageObj && (
-        <div className="no-print fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-stone-200 rounded-2xl max-w-3xl w-full max-h-[88vh] flex flex-col shadow-2xl">
-            <div className="px-6 py-4 border-b border-stone-200 flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-stone-900">
-                  دەستکاریکرن و باشترکرنا لاپەرێ{' '}
-                  {toEasternArabicNumerals(editingPageObj.pageNumber)}
-                </h3>
-                <p className="text-xs text-stone-500">
-                  هەر گوهۆڕینەکا تو ل ڤێرێ دکەی راستەوخۆ د ناڤ لاپەری و د فایلا PDF دا دئێتە چەسپاندن
-                </p>
+        <div className="no-print fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-[#FFFDF9] border border-[#E5DEC9] rounded-2xl max-w-6xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Top Modal Bar: Title + Page Navigation + Reset + Close */}
+            <div className="px-4 sm:px-6 py-3.5 bg-stone-900 text-white flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Edit3 className="w-4 h-4 text-amber-400 shrink-0" />
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold">
+                    بەشێ دەستکاری و راستڤەکرنا لاپەرێ{' '}
+                    {toEasternArabicNumerals(editingPageObj.pageNumber)}
+                  </h3>
+                  <p className="text-[11px] text-stone-300">
+                    هەر گوهۆڕینەکا تو بکەی راستەوخۆ دهێتە پاراستن و د فایلا PDF دا دەردکەڤیت
+                  </p>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setEditingPageNumber(null)}
-                className="p-1.5 text-stone-500 hover:text-stone-900 rounded-lg hover:bg-stone-100 cursor-pointer"
+
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Page Switcher inside Modal */}
+                <div className="flex items-center gap-1 bg-stone-800 px-2.5 py-1 rounded-xl text-xs">
+                  <button
+                    type="button"
+                    disabled={editingPageObj.pageNumber <= 1}
+                    onClick={() => {
+                      const prevP = Math.max(1, editingPageObj.pageNumber - 1);
+                      setEditingPageNumber(prevP);
+                      setCurrentPage(prevP);
+                    }}
+                    className="p-1 text-stone-300 hover:text-white disabled:opacity-40 cursor-pointer"
+                    title="لاپەرێ بەرێ"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-stone-300">لاپەر</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={maxPageCount}
+                    value={editingPageObj.pageNumber}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (val >= 1 && val <= maxPageCount) {
+                        setEditingPageNumber(val);
+                        setCurrentPage(val);
+                      }
+                    }}
+                    className="w-12 text-center font-bold bg-stone-900 text-white border border-stone-700 rounded py-0.5 tabular-nums"
+                  />
+                  <span className="text-stone-400">
+                    ژ {toEasternArabicNumerals(maxPageCount)}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={editingPageObj.pageNumber >= maxPageCount}
+                    onClick={() => {
+                      const nextP = Math.min(maxPageCount, editingPageObj.pageNumber + 1);
+                      setEditingPageNumber(nextP);
+                      setCurrentPage(nextP);
+                    }}
+                    className="p-1 text-stone-300 hover:text-white disabled:opacity-40 cursor-pointer"
+                    title="لاپەرێ پاشتر"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {activeBook.isBuiltIn && (
+                  <button
+                    type="button"
+                    onClick={() => handleResetPageToOriginal(editingPageObj.pageNumber)}
+                    className="px-2.5 py-1.5 text-[11px] bg-stone-800 hover:bg-stone-700 text-stone-200 rounded-xl flex items-center gap-1 cursor-pointer"
+                    title="زڤڕاندنا ڤی لاپەری بۆ نڤیسینا دەستپێکێ"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>زڤڕاندن بۆ ئەسڵی</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setEditingPageNumber(null)}
+                  className="p-1.5 text-stone-300 hover:text-white rounded-lg hover:bg-stone-800 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Fast Bot Command Bar & Instant Find/Replace inside Editor Modal */}
+            <div className="px-4 sm:px-6 py-2.5 bg-[#FAF8F3] border-b border-[#E5DEC9] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              {/* Quick AI Bot Command for this page */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!editorBotPrompt.trim() || isChatLoading) return;
+                  const promptToRun = editorBotPrompt.trim();
+                  setEditorBotPrompt('');
+                  void handleSendChatMessage(undefined, promptToRun, editingPageObj.pageNumber);
+                }}
+                className="flex-1 flex items-center gap-1.5"
               >
-                <X className="w-5 h-5" />
-              </button>
+                <input
+                  type="text"
+                  value={editorBotPrompt}
+                  onChange={(e) => setEditorBotPrompt(e.target.value)}
+                  placeholder={`بێژە بۆتی چ ل لاپەرێ ${toEasternArabicNumerals(
+                    editingPageObj.pageNumber
+                  )} راستڤەکەت (بۆ نموونە: خەلەتیێن رێنڤیسێ چێکە)...`}
+                  className="flex-1 px-3 py-1.5 text-xs bg-white border border-[#DED6C3] rounded-xl focus:outline-none focus:border-[#9A3412]"
+                />
+                <button
+                  type="submit"
+                  disabled={isChatLoading || !editorBotPrompt.trim()}
+                  className="px-3 py-1.5 text-xs font-bold text-white bg-[#CC0000] hover:bg-[#a30000] disabled:opacity-50 rounded-xl flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  {isChatLoading ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5" />
+                  )}
+                  <span>بۆت راستڤەکەت</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isChatLoading}
+                  onClick={() =>
+                    handleSendChatMessage(
+                      undefined,
+                      'خەلەتیێن رێنڤیسێ (إملاء) و خاڵبەندیێ ل ڤی لاپەری ب لەزاتی راستڤەکە بێی گوهۆڕینا شێوازێ ئاخفتنا مامۆستای.',
+                      editingPageObj.pageNumber
+                    )
+                  }
+                  className="px-2.5 py-1.5 text-xs font-semibold text-[#9A3412] bg-[#FFF5F0] hover:bg-[#FFE8DC] border border-[#9A3412]/30 rounded-xl cursor-pointer shrink-0"
+                >
+                  ⚡ راستڤەکرنا خۆکار یا لاپەری
+                </button>
+              </form>
+
+              {/* Add Block / Footnote Buttons */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleAddBlockToPage(editingPageObj.pageNumber, 'paragraph')}
+                  className="px-2.5 py-1.5 text-xs font-semibold text-white bg-stone-900 hover:bg-stone-800 rounded-xl cursor-pointer"
+                >
+                  + پەرەگراف
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleAddBlockToPage(editingPageObj.pageNumber, 'heading')}
+                  className="px-2.5 py-1.5 text-xs font-semibold text-white bg-[#9A3412] hover:bg-[#7C2D12] rounded-xl cursor-pointer"
+                >
+                  + سەردێڕ (سۆر)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleAddFootnoteToPage(editingPageObj.pageNumber)}
+                  className="px-2.5 py-1.5 text-xs font-semibold text-stone-800 bg-white hover:bg-stone-100 border border-[#DED6C3] rounded-xl cursor-pointer"
+                >
+                  + پەراوێز
+                </button>
+              </div>
             </div>
 
             {aiError && (
-              <div className="px-6 py-2 bg-red-50 text-red-800 text-xs border-b border-red-200">
-                {aiError}
+              <div className="px-6 py-2 bg-red-50 text-red-800 text-xs border-b border-red-200 flex items-center justify-between">
+                <span>{aiError}</span>
+                <button
+                  type="button"
+                  onClick={() => setAiError(null)}
+                  className="text-red-600 underline text-[11px] cursor-pointer"
+                >
+                  داخستن
+                </button>
               </div>
             )}
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-5">
-              {editingPageObj.blocks.map((block, bIdx) => {
-                if (block.type !== 'paragraph' && block.type !== 'heading') return null;
-                return (
-                  <div
-                    key={bIdx}
-                    className="space-y-2 bg-stone-50 p-4 rounded-xl border border-stone-200"
-                  >
-                    <div className="flex items-center justify-between text-xs text-stone-500">
-                      <span className="font-semibold">
-                        {block.type === 'heading'
-                          ? 'سەردێڕ (ب رەنگێ سۆر)'
-                          : `پەرەگراف ${toEasternArabicNumerals(bIdx + 1)}`}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={aiRefiningIdx === bIdx}
-                        onClick={() =>
-                          handleAiRefineBlock(editingPageObj.pageNumber, bIdx, block.text)
-                        }
-                        className="px-2.5 py-1 text-xs font-medium text-[#9A3412] bg-[#9A3412]/10 hover:bg-[#9A3412]/20 disabled:opacity-50 rounded-md flex items-center gap-1.5 transition-colors cursor-pointer"
-                      >
-                        <RefreshCw
-                          className={`w-3 h-3 ${aiRefiningIdx === bIdx ? 'animate-spin' : ''}`}
-                        />
-                        <span>
-                          {aiRefiningIdx === bIdx
-                            ? 'باشترکرنا بادینی...'
-                            : 'داڕشتنەڤە ب بادینیەکا رەوانتر'}
-                        </span>
-                      </button>
-                    </div>
-                    <textarea
-                      rows={block.type === 'heading' ? 2 : 4}
-                      value={block.text}
-                      style={{ fontFamily: activeBookFont.cssFamily }}
-                      onChange={(e) =>
-                        updateBlockText(editingPageObj.pageNumber, bIdx, e.target.value)
-                      }
-                      className="w-full p-3 text-base font-book bg-white border border-stone-300 rounded-xl focus:outline-none focus:border-stone-500 leading-relaxed"
-                    />
-                  </div>
-                );
-              })}
+            {editorStatusBanner && (
+              <div className="px-6 py-2 bg-emerald-50 text-emerald-900 text-xs border-b border-emerald-200 flex items-center justify-between">
+                <span className="font-semibold">✓ {editorStatusBanner}</span>
+                <button
+                  type="button"
+                  onClick={() => setEditorStatusBanner(null)}
+                  className="text-emerald-700 underline text-[11px] cursor-pointer"
+                >
+                  داخستن
+                </button>
+              </div>
+            )}
 
-              {editingPageObj.footnotes && editingPageObj.footnotes.length > 0 && (
-                <div className="space-y-3 pt-2 border-t border-stone-200">
-                  <div className="text-xs font-bold text-stone-700">پەراوێزێن لاپەری (هامش):</div>
-                  {editingPageObj.footnotes.map((fn, fnIdx) => (
-                    <textarea
-                      key={fnIdx}
-                      rows={3}
-                      value={fn}
-                      style={{ fontFamily: activeBookFont.cssFamily }}
-                      onChange={(e) =>
-                        updateFootnoteText(editingPageObj.pageNumber, fnIdx, e.target.value)
-                      }
-                      className="w-full p-3 text-sm font-book bg-white border border-stone-300 rounded-xl focus:outline-none focus:border-stone-500 leading-relaxed"
-                    />
-                  ))}
+            {/* Main 2-Column Body: Block Editors + Live Page Preview */}
+            <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-12 gap-5 p-4 sm:p-6">
+              {/* Column 1: Block-by-Block Editor (7 cols on desktop) */}
+              <div className="lg:col-span-7 space-y-4">
+                {editingPageObj.blocks.map((block, bIdx) => {
+                  if (block.type === 'cover') {
+                    return (
+                      <div
+                        key={bIdx}
+                        className="space-y-3 bg-[#FAF8F3] p-4 rounded-xl border border-[#DED6C3]"
+                      >
+                        <div className="text-xs font-bold text-[#9A3412]">
+                          دەستکاریکرنا بەرگێ پەرتووکێ (لاپەرێ ١)
+                        </div>
+                        <div className="grid grid-cols-1 gap-3 text-xs">
+                          <div>
+                            <label className="block font-semibold text-stone-700 mb-1">
+                              دەستپێکا سەری (Kicker):
+                            </label>
+                            <input
+                              type="text"
+                              value={block.kicker}
+                              onChange={(e) =>
+                                updateCoverField(
+                                  editingPageObj.pageNumber,
+                                  bIdx,
+                                  'kicker',
+                                  e.target.value
+                                )
+                              }
+                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-stone-700 mb-1">
+                              ناڤونیشانێ سەرەکی یێ پەرتووکێ (ب رەنگێ سۆر — هەر دێڕەک ل سەر خەتەکی):
+                            </label>
+                            <textarea
+                              rows={3}
+                              value={block.titleLines.join('\n')}
+                              onChange={(e) =>
+                                updateCoverField(
+                                  editingPageObj.pageNumber,
+                                  bIdx,
+                                  'titleLines',
+                                  e.target.value
+                                )
+                              }
+                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl text-base font-bold text-[#CC0000]"
+                            />
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block font-semibold text-stone-700 mb-1">
+                                ناڤونیشانێ شڕۆڤەکار / دانەری:
+                              </label>
+                              <input
+                                type="text"
+                                value={block.compilerLabel || ''}
+                                onChange={(e) =>
+                                  updateCoverField(
+                                    editingPageObj.pageNumber,
+                                    bIdx,
+                                    'compilerLabel',
+                                    e.target.value
+                                  )
+                                }
+                                className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
+                              />
+                            </div>
+                            <div>
+                              <label className="block font-semibold text-stone-700 mb-1">
+                                ناڤێ مامۆستای / دانەری:
+                              </label>
+                              <input
+                                type="text"
+                                value={block.compilerName || ''}
+                                onChange={(e) =>
+                                  updateCoverField(
+                                    editingPageObj.pageNumber,
+                                    bIdx,
+                                    'compilerName',
+                                    e.target.value
+                                  )
+                                }
+                                className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-stone-700 mb-1">
+                              ئایەت یان دوعایا خوارێ یا بەرگی (ب رەنگێ سۆر):
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={block.verse}
+                              onChange={(e) =>
+                                updateCoverField(
+                                  editingPageObj.pageNumber,
+                                  bIdx,
+                                  'verse',
+                                  e.target.value
+                                )
+                              }
+                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-stone-700 mb-1">
+                              ژێدەر یان تێبینیا خوارێ یا بەرگی:
+                            </label>
+                            <input
+                              type="text"
+                              value={block.verseRef}
+                              onChange={(e) =>
+                                updateCoverField(
+                                  editingPageObj.pageNumber,
+                                  bIdx,
+                                  'verseRef',
+                                  e.target.value
+                                )
+                              }
+                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (block.type !== 'paragraph' && block.type !== 'heading') {
+                    return null;
+                  }
+
+                  return (
+                    <div
+                      key={bIdx}
+                      className="space-y-2.5 bg-[#FAF8F3] p-4 rounded-xl border border-[#DED6C3]"
+                    >
+                      {/* Block Toolbar */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-bold text-stone-800">
+                            {block.type === 'heading'
+                              ? `سەردێڕ (بلۆک ${toEasternArabicNumerals(bIdx + 1)})`
+                              : `پەرەگراف ${toEasternArabicNumerals(bIdx + 1)}`}
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={() => handleToggleBlockType(editingPageObj.pageNumber, bIdx)}
+                            className="px-2 py-0.5 text-[11px] bg-white hover:bg-stone-100 border border-stone-300 rounded-md cursor-pointer"
+                          >
+                            بکە {block.type === 'heading' ? 'پەرەگراف' : 'سەردێڕ'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleChangeBlockColor(
+                                editingPageObj.pageNumber,
+                                bIdx,
+                                block.color === 'red' ? 'black' : 'red'
+                              )
+                            }
+                            className={`px-2 py-0.5 text-[11px] rounded-md border font-semibold cursor-pointer ${
+                              block.color === 'red' || block.type === 'heading'
+                                ? 'bg-red-50 text-[#CC0000] border-red-200'
+                                : 'bg-white text-stone-700 border-stone-300'
+                            }`}
+                          >
+                            رەنگ: {block.color === 'red' ? 'سۆر' : 'رەش'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleInsertTagInBlock(editingPageObj.pageNumber, bIdx, 'red')
+                            }
+                            className="px-2 py-0.5 text-[11px] bg-red-50 hover:bg-red-100 text-[#CC0000] border border-red-200 rounded-md font-semibold cursor-pointer"
+                            title="نڤیسینا د ناڤ {{r:...}} دا ب رەنگێ سۆر دەردکەڤیت"
+                          >
+                            + پەیڤا سۆر {'{{r:...}}'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleInsertTagInBlock(editingPageObj.pageNumber, bIdx, 'quran')
+                            }
+                            className="px-2 py-0.5 text-[11px] bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-md font-semibold cursor-pointer"
+                          >
+                            + ئایەت ﴿...﴾
+                          </button>
+                        </div>
+
+                        {/* AI Fix & Reorder/Delete Buttons */}
+                        <div className="flex flex-wrap items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={aiRefiningIdx === bIdx}
+                            onClick={() =>
+                              handleAiRefineBlock(
+                                editingPageObj.pageNumber,
+                                bIdx,
+                                block.text,
+                                'spelling'
+                              )
+                            }
+                            className="px-2.5 py-1 text-[11px] font-semibold text-[#9A3412] bg-[#9A3412]/10 hover:bg-[#9A3412]/20 disabled:opacity-50 rounded-md flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <RefreshCw
+                              className={`w-3 h-3 ${
+                                aiRefiningIdx === bIdx && aiRefiningMode === 'spelling'
+                                  ? 'animate-spin'
+                                  : ''
+                              }`}
+                            />
+                            <span>راستڤەکرنا رێنڤیسێ</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={aiRefiningIdx === bIdx}
+                            onClick={() =>
+                              handleAiRefineBlock(
+                                editingPageObj.pageNumber,
+                                bIdx,
+                                block.text,
+                                'fluent'
+                              )
+                            }
+                            className="px-2.5 py-1 text-[11px] font-medium text-stone-700 bg-white hover:bg-stone-100 border border-stone-300 disabled:opacity-50 rounded-md flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <RefreshCw
+                              className={`w-3 h-3 ${
+                                aiRefiningIdx === bIdx && aiRefiningMode === 'fluent'
+                                  ? 'animate-spin'
+                                  : ''
+                              }`}
+                            />
+                            <span>بادینیا رەوانتر</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleMoveBlockInPage(editingPageObj.pageNumber, bIdx, 'up')
+                            }
+                            className="px-2 py-1 text-xs bg-white hover:bg-stone-100 border border-stone-300 rounded-md cursor-pointer"
+                            title="برنا سەری"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleMoveBlockInPage(editingPageObj.pageNumber, bIdx, 'down')
+                            }
+                            className="px-2 py-1 text-xs bg-white hover:bg-stone-100 border border-stone-300 rounded-md cursor-pointer"
+                            title="ئینانا خوارێ"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleDeleteBlockFromPage(editingPageObj.pageNumber, bIdx)
+                            }
+                            className="p-1 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-md cursor-pointer"
+                            title="ژێبرنا ڤی بلۆکی"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <textarea
+                        rows={block.type === 'heading' ? 2 : 5}
+                        value={block.text}
+                        style={{ fontFamily: activeBookFont.cssFamily }}
+                        onChange={(e) =>
+                          updateBlockText(editingPageObj.pageNumber, bIdx, e.target.value)
+                        }
+                        className="w-full p-3 text-base font-book bg-white border border-stone-300 rounded-xl focus:outline-none focus:border-[#9A3412] leading-relaxed"
+                      />
+                    </div>
+                  );
+                })}
+
+                {editingPageObj.footnotes && editingPageObj.footnotes.length > 0 && (
+                  <div className="space-y-3 pt-3 border-t border-[#E5DEC9]">
+                    <div className="text-xs font-bold text-stone-800">پەراوێزێن لاپەری (هامش):</div>
+                    {editingPageObj.footnotes.map((fn, fnIdx) => (
+                      <div key={fnIdx} className="flex items-start gap-2">
+                        <textarea
+                          rows={2}
+                          value={fn}
+                          style={{ fontFamily: activeBookFont.cssFamily }}
+                          onChange={(e) =>
+                            updateFootnoteText(editingPageObj.pageNumber, fnIdx, e.target.value)
+                          }
+                          className="flex-1 p-3 text-sm font-book bg-white border border-stone-300 rounded-xl focus:outline-none focus:border-[#9A3412] leading-relaxed"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleDeleteFootnoteFromPage(editingPageObj.pageNumber, fnIdx)
+                          }
+                          className="p-2 text-stone-400 hover:text-red-600 rounded-lg hover:bg-red-50 cursor-pointer shrink-0"
+                          title="ژێبرنا پەراوێزێ"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Column 2: Live Book Page Preview (5 cols on desktop) */}
+              <div className="lg:col-span-5 flex flex-col items-center space-y-2 bg-[#F5F1E8]/60 p-3 rounded-2xl border border-[#E5DEC9]">
+                <div className="text-xs font-bold text-stone-700">
+                  پێشبینینا راستەوخۆ یا لاپەرێ {toEasternArabicNumerals(editingPageObj.pageNumber)}
                 </div>
-              )}
+                <BookPageSheet
+                  page={editingPageObj}
+                  fontSizePt={fontSizePt}
+                  zoom={0.72}
+                  headerTitle={activeBook.headerTitle}
+                  bookFontFamily={activeBookFont.cssFamily}
+                />
+              </div>
             </div>
 
-            <div className="px-6 py-3.5 border-t border-stone-200 flex items-center justify-end gap-3 bg-stone-50 rounded-b-2xl">
+            <div className="px-6 py-3 border-t border-[#E5DEC9] flex items-center justify-between gap-3 bg-[#FAF8F3]">
+              <span className="text-xs text-stone-600">
+                ✓ هەمی گوهۆڕین ب شێوەیێ خۆکار د هەمان چرکە دا دهێنە پاراستن
+              </span>
               <button
                 type="button"
                 onClick={() => setEditingPageNumber(null)}
                 className="px-5 py-2 text-xs font-semibold text-white bg-stone-900 hover:bg-stone-800 rounded-xl transition-colors cursor-pointer"
               >
-                پاراستن و داخستن
+                داخستنا پەنجەرەیا دەستکاریێ
               </button>
             </div>
           </div>

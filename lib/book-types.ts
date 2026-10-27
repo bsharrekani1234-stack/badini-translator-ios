@@ -67,6 +67,8 @@ export type PageBlock =
       type: 'blank';
     };
 
+export type BookBlock = PageBlock;
+
 export interface BookPageData {
   pageNumber: number; // 1..N
   showHeader?: boolean; // default true for >= 5
@@ -115,12 +117,11 @@ export function toEasternArabicNumerals(num: number | string): string {
 }
 
 /**
- * Parses text containing `﴿...﴾` (rendered in red bold) and `{{r:...}}` (rendered in red).
+ * Parses text containing `﴿...﴾` (rendered in red bold), `{{r:...}}` (rendered in red), and `**...**` (rendered in bold).
  */
 export function parseRichText(input: string, defaultColor: 'black' | 'red' = 'black'): RichTextToken[] {
   const tokens: RichTextToken[] = [];
-  // Match either ﴿...﴾ or {{r:...}}
-  const regex = /(﴿[^﴾]*﴾|\{\{r:([^}]*)\}\})/g;
+  const regex = /(﴿[^﴾]*﴾|\{\{r:([^}]*)\}\}|\*\*([^*]+)\*\*)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -138,10 +139,16 @@ export function parseRichText(input: string, defaultColor: 'black' | 'red' = 'bl
         color: 'red',
         bold: true,
       });
-    } else {
+    } else if (full.startsWith('{{r:')) {
       tokens.push({
         text: match[2] || '',
         color: 'red',
+        bold: true,
+      });
+    } else if (full.startsWith('**')) {
+      tokens.push({
+        text: match[3] || '',
+        color: defaultColor,
         bold: true,
       });
     }
@@ -157,3 +164,4 @@ export function parseRichText(input: string, defaultColor: 'black' | 'red' = 'bl
 
   return tokens;
 }
+

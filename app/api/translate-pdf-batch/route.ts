@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+import { Type } from '@google/genai';
+import {
+  generateContentResilient,
+  parseOrRepairJson,
+  sanitizeErrorMessageKurdish,
+} from '@/lib/gemini-resilient';
 
 export async function POST(req: NextRequest) {
   try {
@@ -39,122 +33,92 @@ export async function POST(req: NextRequest) {
 ٥. پەراوێز (footnotes): ئەگەر ل خوارا لاپەری پەراوێز (هامش) هەبن، هەمیان ب تەحقیق وەرگێرە بادینی و بێخە د لیستا footnotes یا وی لاپەری دا.
 ٦. ژمارەیا لاپەران: ئەڤ فایلە لاپەرێن [${pageNumbers.join(', ')}] بخۆڤە دگریت. دڤێت هەر لاپەرەک ب ژمارەیا خۆ یا دروست بهێتە زڤڕاندن.`;
 
-    // Resilient multi-model + exponential backoff retry loop so 503 UNAVAILABLE spikes never fail
-    const candidateModels = [
-      'gemini-3.8-flash',
-      'gemini-3.8-flash',
-      'gemini-2.5-flash',
-      'gemini-3-flash-preview',
-      'gemini-2.5-flash',
-    ];
-
-    let rawJson = '';
-    let lastError: unknown = null;
-
-    for (let attempt = 0; attempt < candidateModels.length; attempt++) {
-      const modelName = candidateModels[attempt];
-      try {
-        const isGemini3 = modelName.startsWith('gemini-3');
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: 'application/pdf',
-                  data: pdfBase64,
-                },
+    const response = await generateContentResilient(
+      {
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType: 'application/pdf',
+                data: pdfBase64,
               },
-              {
-                text: `لاپەرێن (${pageNumbers.join(
-                  ', '
-                )}) ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
+            },
+            {
+              text: `لاپەرێن (${pageNumbers.join(
+                ', '
+              )}) ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
+            },
+          ],
+        },
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              bookHeaderTitleBadini: {
+                type: Type.STRING,
               },
-            ],
-          },
-          config: {
-            systemInstruction,
-            ...(isGemini3
-              ? {
-                  thinkingConfig: {
-                    thinkingLevel: ThinkingLevel.LOW,
-                  },
-                }
-              : {}),
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                bookHeaderTitleBadini: {
-                  type: Type.STRING,
-                },
-                pages: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      pageNumber: { type: Type.INTEGER },
-                      showHeader: { type: Type.BOOLEAN },
-                      blocks: {
-                        type: Type.ARRAY,
-                        items: {
-                          type: Type.OBJECT,
-                          properties: {
-                            blockType: {
-                              type: Type.STRING,
-                              description: 'cover, heading, paragraph, stars, or blank',
-                            },
-                            text: { type: Type.STRING },
-                            align: { type: Type.STRING },
-                            size: { type: Type.STRING },
-                            kicker: { type: Type.STRING },
-                            titleLines: {
-                              type: Type.ARRAY,
-                              items: { type: Type.STRING },
-                            },
-                            compilerLabel: { type: Type.STRING },
-                            compilerName: { type: Type.STRING },
-                            verse: { type: Type.STRING },
-                            verseRef: { type: Type.STRING },
+              pages: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    pageNumber: { type: Type.INTEGER },
+                    showHeader: { type: Type.BOOLEAN },
+                    blocks: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          blockType: {
+                            type: Type.STRING,
+                            description: 'cover, heading, paragraph, stars, or blank',
                           },
-                          required: ['blockType'],
+                          text: { type: Type.STRING },
+                          align: { type: Type.STRING },
+                          size: { type: Type.STRING },
+                          kicker: { type: Type.STRING },
+                          titleLines: {
+                            type: Type.ARRAY,
+                            items: { type: Type.STRING },
+                          },
+                          compilerLabel: { type: Type.STRING },
+                          compilerName: { type: Type.STRING },
+                          verse: { type: Type.STRING },
+                          verseRef: { type: Type.STRING },
                         },
-                      },
-                      footnotes: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING },
+                        required: ['blockType'],
                       },
                     },
-                    required: ['pageNumber', 'blocks'],
+                    footnotes: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
                   },
+                  required: ['pageNumber', 'blocks'],
                 },
               },
-              required: ['pages'],
             },
+            required: ['pages'],
           },
-        });
+        },
+      },
+      8
+    );
 
-        if (response.text) {
-          rawJson = response.text.trim();
-          break;
-        }
-      } catch (err: unknown) {
-        lastError = err;
-        // Wait briefly before retrying next candidate model
-        await sleep(1200 * (attempt + 1));
-      }
-    }
-
-    if (!rawJson) {
-      throw lastError || new Error('پەیوەندی ب سێرڤەرێ وەرگێرانێ ڤە سەرنەکەفت، تکایە دووبارە هەول بدە.');
-    }
-
-    const parsed = JSON.parse(rawJson);
+    const rawJson = response.text?.trim() || '{}';
+    const parsed = parseOrRepairJson<{
+      bookHeaderTitleBadini?: string;
+      pages?: Record<string, unknown>[];
+    }>(rawJson);
 
     const normalizedPages = (parsed.pages || []).map(
       (p: Record<string, unknown>, idx: number) => {
-        const pageNum =
-          typeof p.pageNumber === 'number' ? p.pageNumber : pageNumbers[idx] || idx + 1;
+        const rawNum = typeof p.pageNumber === 'number' ? p.pageNumber : -1;
+        const pageNum = pageNumbers.includes(rawNum)
+          ? rawNum
+          : pageNumbers[idx] ?? (pageNumbers[0] || 1) + idx;
         const rawBlocks = Array.isArray(p.blocks) ? p.blocks : [];
 
         const blocks = rawBlocks.map((b: Record<string, unknown>) => {
@@ -212,10 +176,14 @@ export async function POST(req: NextRequest) {
       pages: normalizedPages,
     });
   } catch (error: unknown) {
-    const message =
-      error instanceof Error
-        ? 'لۆدەکا زۆر ل سەر سێرڤەرێ وەرگێرانێ هەبوو، تکایە دوگمەیا وەرگێرانێ جارەکا دی لێبدە.'
-        : 'شاشیەک د وەرگێرانا لاپەرێن PDF دا چێبوو';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: sanitizeErrorMessageKurdish(
+          error,
+          'لۆدەکا زۆر ل سەر سێرڤەرێ وەرگێرانێ هەبوو، تکایە دوگمەیا وەرگێرانێ جارەکا دی لێبدە.'
+        ),
+      },
+      { status: 500 }
+    );
   }
 }
