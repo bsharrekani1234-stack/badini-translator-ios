@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: var(--font-noto-naskh), var(--font-amiri), serif;
+  }
+}
+
+.font-book {
+  font-family: var(--font-amiri), var(--font-noto-naskh), serif;
+}
+
+@media print {
+  @page {
+    size: 210mm 297mm;
+    margin: 0;
+  }
+
+  body {
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only-all-pages {
+    display: block !important;
+  }
+
+  .book-page-sheet {
+    width: 210mm !important;
+    height: 297mm !important;
+    max-width: none !important;
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    page-break-after: always !important;
+    break-after: page !important;
+  }
+}
