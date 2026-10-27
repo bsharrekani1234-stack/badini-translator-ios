@@ -30,13 +30,14 @@ jobs:
       - name: Build Xcode Project
         run: |
           cd ios/App
-          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" clean build
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" clean build
 
       - name: Package to IPA
         run: |
           cd ios/App
           mkdir -p Payload
-          cp -r build/Build/Products/Release-iphoneos/App.app Payload/
+          APP_PATH=$(find build/Build/Products -name "*.app" -type d | head -n 1)
+          cp -r "$APP_PATH" Payload/
           zip -r ../../BadiniTranslator.ipa Payload
 
       - name: Upload IPA Artifact
