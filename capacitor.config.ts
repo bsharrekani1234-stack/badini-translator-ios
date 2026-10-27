@@ -1,4 +1,4 @@
-const config: CapacitorConfig = {
+const config = {
   appId: 'com.book.translator',
   appName: 'book translator badini',
   webDir: 'public',
