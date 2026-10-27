@@ -113,10 +113,10 @@ async function translateSubPdfBatch(
 
   const candidateModels = [
     'gemini-3.8-flash',
-    'gemini-2.5-flash',
+    'gemini-flash-latest',
+    'gemini-3.1-flash-lite',
     'gemini-3.8-flash',
-    'gemini-3-flash-preview',
-    'gemini-2.5-flash',
+    'gemini-flash-latest',
   ];
 
   let rawJson = '';
@@ -145,6 +145,7 @@ async function translateSubPdfBatch(
         },
         config: {
           systemInstruction,
+          temperature: 0.15,
           ...(isGemini3
             ? {
                 thinkingConfig: {
@@ -208,7 +209,7 @@ async function translateSubPdfBatch(
       }
     } catch (err) {
       lastErr = err;
-      await sleep(1400 * (attempt + 1));
+      await sleep(700 * (attempt + 1));
     }
   }
 
@@ -301,8 +302,8 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
     const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     const existingPageNums = new Set(job.pages.map((p) => p.pageNumber));
 
-    const BATCH_SIZE = 2;
-    const CONCURRENCY = 2; // 4 pages in parallel
+    const BATCH_SIZE = 3;
+    const CONCURRENCY = 4; // 12 pages translated simultaneously in parallel!
 
     const allBatches: number[][] = [];
     for (let p = job.startPage; p <= job.endPage; p += BATCH_SIZE) {
@@ -329,46 +330,53 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
       const lastGroup = concurrentGroup[concurrentGroup.length - 1];
       const lastPage = lastGroup[lastGroup.length - 1];
 
-      currentJob.statusMessage = `وەرگێرانا پاشخانەیی یا بەردەوامە (لاپەر ${toEasternArabic(
+      currentJob.statusMessage = `وەرگێرانا بلەز یا بەردەوامە (لاپەر ${toEasternArabic(
         firstPage
-      )} هەتا ${toEasternArabic(lastPage)}) — خۆ ئەگەر بەرنامەی بگری ژی دێ شۆلێ خۆ تەمام کەت...`;
+      )} هەتا ${toEasternArabic(lastPage)} د هەمان دەم دا)...`;
       currentJob.updatedAt = Date.now();
       persistJobsStore();
 
-      const groupResults = await Promise.all(
+      await Promise.all(
         concurrentGroup.map(async (pageNumbers) => {
           const subDoc = await PDFDocument.create();
-          const copiedPages = await subDoc.copyPages(
-            srcDoc,
-            pageNumbers.map((n) => n - 1)
-          );
+          const totalDocPages = srcDoc.getPageCount();
+          // Support both full PDF (where page index is n - 1) and pre-sliced sub-PDF (where index is n - job.startPage)
+          const indicesToCopy = pageNumbers.map((n) => {
+            const zeroIdx = totalDocPages < job.endPage ? n - job.startPage : n - 1;
+            return Math.max(0, Math.min(totalDocPages - 1, zeroIdx));
+          });
+          const copiedPages = await subDoc.copyPages(srcDoc, indicesToCopy);
           copiedPages.forEach((cp) => subDoc.addPage(cp));
           const pdfBase64 = await subDoc.saveAsBase64();
-          return translateSubPdfBatch(pdfBase64, pageNumbers);
+          const batchPages = await translateSubPdfBatch(pdfBase64, pageNumbers);
+
+          // Immediately save each completed batch to the job store so the user sees pages live right away!
+          const updatedJob = store.get(jobId);
+          if (!updatedJob || updatedJob.status === 'stopped') return;
+
+          const pageMap = new Map<number, BookPageData>();
+          for (const existing of updatedJob.pages) {
+            pageMap.set(existing.pageNumber, existing);
+          }
+          for (const newPage of batchPages) {
+            pageMap.set(newPage.pageNumber, newPage);
+          }
+
+          const sortedPages = Array.from(pageMap.values()).sort(
+            (a, b) => a.pageNumber - b.pageNumber
+          );
+
+          updatedJob.pages = sortedPages;
+          updatedJob.donePagesCount = sortedPages.length;
+          updatedJob.statusMessage = `${toEasternArabic(
+            sortedPages.length
+          )} ژ ${toEasternArabic(
+            updatedJob.totalToTranslate
+          )} لاپەران ب تەحقیق هاتنە وەرگێران...`;
+          updatedJob.updatedAt = Date.now();
+          persistJobsStore();
         })
       );
-
-      const updatedJob = store.get(jobId);
-      if (!updatedJob || updatedJob.status === 'stopped') break;
-
-      const pageMap = new Map<number, BookPageData>();
-      for (const existing of updatedJob.pages) {
-        pageMap.set(existing.pageNumber, existing);
-      }
-      for (const batchPages of groupResults) {
-        for (const newPage of batchPages) {
-          pageMap.set(newPage.pageNumber, newPage);
-        }
-      }
-
-      const sortedPages = Array.from(pageMap.values()).sort(
-        (a, b) => a.pageNumber - b.pageNumber
-      );
-
-      updatedJob.pages = sortedPages;
-      updatedJob.donePagesCount = sortedPages.length;
-      updatedJob.updatedAt = Date.now();
-      persistJobsStore();
     }
 
     const finalJob = store.get(jobId);

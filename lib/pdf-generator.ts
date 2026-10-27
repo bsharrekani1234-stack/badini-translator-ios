@@ -68,8 +68,8 @@ export function renderBookPageToCanvas(
 
   let cursorY = marginTop;
 
-  // 1. Running Header (Pages 5..142)
-  if (page.showHeader && page.pageNumber >= 5) {
+  // 1. Running Header when page.showHeader is true
+  if (page.showHeader && page.pageNumber >= 2) {
     const pageNumStr = toEasternArabicNumerals(page.pageNumber);
     const isOdd = page.pageNumber % 2 === 1;
 
@@ -106,6 +106,17 @@ export function renderBookPageToCanvas(
   const footnoteHeight = page.footnotes && page.footnotes.length > 0 ? page.footnotes.length * 36 + 24 : 0;
   const maxBodyY = PDF_HEIGHT_PT - marginBottom - footnoteHeight;
 
+  const widthCache = new Map<string, number>();
+  const measureWordWidth = (fontSpec: string, text: string): number => {
+    const key = `${fontSpec}__${text}`;
+    const cached = widthCache.get(key);
+    if (cached !== undefined) return cached;
+    ctx.font = fontSpec;
+    const w = ctx.measureText(text).width;
+    widthCache.set(key, w);
+    return w;
+  };
+
   // Helper to wrap rich text tokens into lines
   const wrapRichTokens = (tokens: RichTextToken[], maxWidth: number, fontSize: number, forceBold = false): WordToken[][] => {
     const words: WordToken[] = [];
@@ -114,12 +125,12 @@ export function renderBookPageToCanvas(
       for (const part of parts) {
         if (!part) continue;
         const isBold = forceBold || token.bold;
-        ctx.font = `${isBold ? 'bold ' : ''}${fontSize}px ${fontFamily}`;
+        const fontSpec = `${isBold ? 'bold ' : ''}${fontSize}px ${fontFamily}`;
         words.push({
           text: part,
           color: token.color,
           bold: isBold,
-          width: ctx.measureText(part).width,
+          width: measureWordWidth(fontSpec, part),
         });
       }
     }
@@ -376,12 +387,12 @@ export function renderBookPageToCanvas(
         const parts = token.text.split(/(\s+)/);
         for (const part of parts) {
           if (!part) continue;
-          ctx.font = `${token.bold ? 'bold ' : ''}${pSize}px ${fontFamily}`;
+          const fontSpec = `${token.bold ? 'bold ' : ''}${pSize}px ${fontFamily}`;
           allWords.push({
             text: part,
             color: token.color,
             bold: token.bold,
-            width: ctx.measureText(part).width,
+            width: measureWordWidth(fontSpec, part),
           });
         }
       }
@@ -524,6 +535,7 @@ export async function generateAndDownloadBookPdf(
   options: {
     filename?: string;
     fontSizePt?: number;
+    fontFamily?: string;
     scale?: number;
     headerTitle?: string;
     onProgress?: (current: number, total: number) => void;
@@ -532,6 +544,7 @@ export async function generateAndDownloadBookPdf(
   const {
     filename = 'پەرتووکا-فیتنەیا-وێنەگرتنا-زانایان-بادینی.pdf',
     fontSizePt = 15.5,
+    fontFamily,
     scale = 2,
     headerTitle = BOOK_HEADER_TITLE,
     onProgress,
@@ -564,6 +577,7 @@ export async function generateAndDownloadBookPdf(
     renderBookPageToCanvas(page, offscreenCanvas, {
       scale,
       fontSizePt,
+      fontFamily,
       headerTitle,
     });
 

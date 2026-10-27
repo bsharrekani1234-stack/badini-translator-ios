@@ -74,6 +74,15 @@ export interface BookPageData {
   footnotes?: string[];
 }
 
+export interface AudioLessonTrack {
+  id: string;
+  title: string;
+  fileName?: string;
+  audioUrl?: string;
+  startPage: number;
+  endPage: number;
+}
+
 export interface BookProject {
   id: string;
   title: string;
@@ -84,6 +93,8 @@ export interface BookProject {
   totalPages: number;
   pages: BookPageData[];
   originalPdfUrl?: string;
+  audioUrl?: string;
+  audioTracks?: AudioLessonTrack[];
   createdAt: string;
   isDefault?: boolean;
   isBuiltIn?: boolean;
