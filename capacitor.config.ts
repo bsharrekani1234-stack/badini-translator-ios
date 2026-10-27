@@ -1,5 +1,3 @@
-import { CapacitorConfig } from '@capacitor/cli';
-
 const config: CapacitorConfig = {
   appId: 'com.book.translator',
   appName: 'book translator badini',
