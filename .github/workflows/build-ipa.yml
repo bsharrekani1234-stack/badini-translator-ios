@@ -1,5 +1,5 @@
 name: Build iOS IPA
-on: push: branches: [ "main" ] workflow_dispatch:
+on: workflow_dispatch: push: branches: - main
 jobs: build: runs-on: macos-14 steps: - name: Checkout repository uses: actions/checkout@v4
   - name: Setup Node.js
     uses: actions/setup-node@v4
@@ -15,7 +15,7 @@ jobs: build: runs-on: macos-14 steps: - name: Checkout repository uses: actions/
   - name: Sync Capacitor iOS
     run: npx cap sync ios
 
-  - name: Build Xcode (.app)
+  - name: Build Xcode Project
     run: |
       cd ios/App
       xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" clean build
