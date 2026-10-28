@@ -1,103 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Type } from '@google/genai';
-import { BookBlock, BookPageData } from '@/lib/book-types';
+import {
+  BookDesignConfig,
+  DEFAULT_BOOK_DESIGN,
+} from '@/lib/book-types';
 import {
   generateContentResilient,
   parseOrRepairJson,
   sanitizeErrorMessageKurdish,
 } from '@/lib/gemini-resilient';
-
-function applyTextReplacementToBlock(block: BookBlock, findStr: string, replaceStr: string): { block: BookBlock; changed: boolean } {
-  if (!findStr) return { block, changed: false };
-  let changed = false;
-  const replaceAllStr = (src: string): string => {
-    if (!src || !src.includes(findStr)) return src;
-    changed = true;
-    return src.split(findStr).join(replaceStr);
-  };
-
-  if (block.type === 'paragraph' || block.type === 'heading') {
-    const nextText = replaceAllStr(block.text);
-    return changed ? { block: { ...block, text: nextText }, changed: true } : { block, changed: false };
-  }
-  if (block.type === 'cover') {
-    const kicker = replaceAllStr(block.kicker);
-    const titleLines = block.titleLines.map((l) => replaceAllStr(l));
-    const compilerLabel = block.compilerLabel ? replaceAllStr(block.compilerLabel) : block.compilerLabel;
-    const compilerName = block.compilerName ? replaceAllStr(block.compilerName) : block.compilerName;
-    const verse = replaceAllStr(block.verse);
-    const verseRef = replaceAllStr(block.verseRef);
-    return changed
-      ? {
-          block: {
-            ...block,
-            kicker,
-            titleLines,
-            compilerLabel,
-            compilerName,
-            verse,
-            verseRef,
-          },
-          changed: true,
-        }
-      : { block, changed: false };
-  }
-  if (block.type === 'epigraph') {
-    const intro = replaceAllStr(block.intro);
-    const verse = replaceAllStr(block.verse);
-    const verseRef = replaceAllStr(block.verseRef);
-    return changed ? { block: { ...block, intro, verse, verseRef }, changed: true } : { block, changed: false };
-  }
-  if (block.type === 'bismillah') {
-    const bismillah = replaceAllStr(block.bismillah);
-    const subLines = block.subLines.map((s) => replaceAllStr(s));
-    return changed ? { block: { ...block, bismillah, subLines }, changed: true } : { block, changed: false };
-  }
-  if (block.type === 'imprint') {
-    const lines = block.lines.map((l) => ({ ...l, text: replaceAllStr(l.text) }));
-    return changed ? { block: { ...block, lines }, changed: true } : { block, changed: false };
-  }
-  if (block.type === 'poem') {
-    const couplets = block.couplets.map((c) => ({
-      right: replaceAllStr(c.right),
-      left: replaceAllStr(c.left),
-    }));
-    return changed ? { block: { ...block, couplets }, changed: true } : { block, changed: false };
-  }
-  if (block.type === 'toc') {
-    const heading = block.heading ? replaceAllStr(block.heading) : block.heading;
-    const items = block.items.map((it) => ({ ...it, title: replaceAllStr(it.title) }));
-    return changed ? { block: { ...block, heading, items }, changed: true } : { block, changed: false };
-  }
-  return { block, changed: false };
-}
-
-function serializePageCompact(page: BookPageData): string {
-  const lines: string[] = [];
-  page.blocks.forEach((b, idx) => {
-    if (b.type === 'paragraph' || b.type === 'heading') {
-      lines.push(`[بلۆک ${idx} | ${b.type}]: ${b.text}`);
-    } else if (b.type === 'cover') {
-      lines.push(
-        `[بلۆک ${idx} | cover]: kicker="${b.kicker}" | title="${b.titleLines.join(' / ')}" | compiler="${
-          b.compilerName || ''
-        }" | verse="${b.verse}"`
-      );
-    } else if (b.type === 'epigraph') {
-      lines.push(`[بلۆک ${idx} | epigraph]: ${b.intro} | ${b.verse} | ${b.verseRef}`);
-    } else if (b.type === 'bismillah') {
-      lines.push(`[بلۆک ${idx} | bismillah]: ${b.bismillah} | ${b.subLines.join(' / ')}`);
-    } else {
-      lines.push(`[بلۆک ${idx} | ${b.type}]`);
-    }
-  });
-  if (page.footnotes && page.footnotes.length > 0) {
-    page.footnotes.forEach((fn, fIdx) => {
-      lines.push(`[پەراوێز ${fIdx}]: ${fn}`);
-    });
-  }
-  return lines.join('\n');
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -105,86 +16,107 @@ export async function POST(req: NextRequest) {
     const {
       message,
       userMessage,
-      pageData,
-      currentPage,
+      imageDataUrl,
+      imageMimeType,
+      currentDesign,
+      bookTitle,
       history,
     } = body as {
       message?: string;
       userMessage?: string;
-      pageData?: BookPageData;
-      currentPage?: BookPageData;
+      imageDataUrl?: string;
+      imageMimeType?: string;
+      currentDesign?: BookDesignConfig;
+      bookTitle?: string;
       history?: { role: 'user' | 'assistant'; text: string }[];
     };
 
-    const resolvedMessage = (message || userMessage || '').trim();
-    const resolvedPageData = pageData || currentPage;
+    const hasImage = Boolean(imageDataUrl && imageDataUrl.trim().length > 0);
+    const resolvedMessage =
+      (message || userMessage || '').trim() ||
+      (hasImage
+        ? 'تکایە دیزاینا پەرتووکێ، بەرگێ پەرتووکێ و رەنگێن فۆنتان رێک وەکی ڤی وێنەی چێکە.'
+        : '');
+    const baseDesign: BookDesignConfig = currentDesign || DEFAULT_BOOK_DESIGN;
 
-    if (!resolvedMessage || !resolvedPageData) {
+    if (!resolvedMessage && !hasImage) {
       return NextResponse.json(
-        { error: 'نامە و داتایێن لاپەری پێدڤی نە' },
+        { error: 'تکایە بنڤیسە کا تە چ دیزاین یان رەنگ بۆ پەرتووکێ و بەرگی دڤێت، یان وێنەیەکی بهنێرە' },
         { status: 400 }
       );
     }
 
-    // 1. Instant zero-latency path if the user explicitly wrote a quoted word replacement:
-    // e.g. «X» بکە «Y» or "X" بگوهۆڕە بۆ "Y"
-    const directReplaceMatch = resolvedMessage.match(
-      /(?:پەیڤا|جملەیا|ئاخفتنا|ل شوینا)?\s*[«"”']([^»"”']+)[»"”']\s*(?:بکە|بگوهۆڕە بۆ|بگوهورە بو|بگوهۆرە بۆ|بنڤیسە)\s*[«"”']([^»"”']*)[»"”']/i
-    );
-    if (directReplaceMatch && directReplaceMatch[1]) {
-      const findWord = directReplaceMatch[1];
-      const replaceWord = directReplaceMatch[2] ?? '';
-      let anyChanged = false;
-      const nextBlocks = resolvedPageData.blocks.map((b) => {
-        const res = applyTextReplacementToBlock(b, findWord, replaceWord);
-        if (res.changed) anyChanged = true;
-        return res.block;
-      });
-      const nextFootnotes = resolvedPageData.footnotes?.map((fn) => {
-        if (fn.includes(findWord)) {
-          anyChanged = true;
-          return fn.split(findWord).join(replaceWord);
-        }
-        return fn;
-      });
-
-      if (anyChanged) {
-        return NextResponse.json({
-          reply: `ئێکسەر هاتە راستڤەکرن: «${findWord}» هاتە گوهۆڕین بۆ «${replaceWord}» ل سەر لاپەرێ ${resolvedPageData.pageNumber}.`,
-          didModifyPage: true,
-          updatedPage: {
-            ...resolvedPageData,
-            blocks: nextBlocks,
-            footnotes: nextFootnotes,
-          },
-        });
-      }
-    }
-
     const recentHistory = (history || [])
       .slice(-4)
-      .map((h) => `${h.role === 'user' ? 'بکارئینەر' : 'یاریدەدەر'}: ${h.text}`)
+      .map((h) => `${h.role === 'user' ? 'بکارئینەر' : 'دیزاینەر'}: ${h.text}`)
       .join('\n');
 
-    const systemInstruction = `تۆ یاریدەدەرەکێ بلەز و شارەزایێ زمانێ کوردی (شێوەزارێ بادینی) یی بۆ راستڤەکرنا لاپەرێن پەرتووکێ.
-گرنگترین یاسا بۆ لەزاتیێ (SPEED RULE):
-١. هەمی بلۆکێن لاپەری دوبارە مەنڤیسە! بتنێ ئەو پەیڤ یان ئەو بلۆکێ پێدڤی ب گوهۆڕینێ یە بزڤڕینە:
-   - ئەگەر گوهۆڕینا چەند پەیڤان یان رێنڤیسێ یان زێدەکرنا رەنگێ سۆر {{r:...}} بیت، د ناڤ textReplacements دا بنڤیسە: [{"find": "دەقێ کەڤن وەکی خۆ", "replace": "دەقێ نوی یێ راستڤەکری"}].
-   - ئەگەر پەرەگرافەک یان سەردێڕەک ب تەمامی دهێتە داڕشتنەڤە یان راستڤەکرن، بتنێ ژمارا وی بلۆکی (blockIndex) د ناڤ modifiedBlocks دا بزڤڕینە بێی کو بلۆکێن دی یێن نەگوهۆڕی بنڤیسی!
-٢. بۆ نڤیسینا ب رەنگێ سۆر (وەکی ئایەت، فەرموودە، یان ناڤێن زانایان) بکە د ناڤ {{r:...}} دا، و ئایەتێن قورئانێ هەردەم د ناڤ ﴿...﴾ دا ب عەرەبی بهێلە بێی تەفسیر.
-٣. ئەگەر بکارئینەری بتنێ پرسیارەک کربیت بێی داخازا گوهۆڕینێ، didModifyPage بکە false و ب کورتی بەرسڤا وی بدە.`;
+    const systemInstruction = `تۆ ڕۆبۆتێ شارەزایێ دیزاینکرنا پەرتووکان، چێکرنا بەرگێ پەرتووکێ (Cover)، و رێکخستنا رەنگێن فۆنتان (١ رەنگ، ٢ رەنگ، یان ٣ رەنگ) ب زمانێ کوردی (شێوەزارێ بادینی) یی.
+کارێ تە دەمێ بکارئینەر دگەل تە دئاخڤیت یان وێنەیەکی بۆ تە دهنێریت:
+١. ئەگەر بکارئینەری وێنەیەک (Image) هنارتبیت:
+   - ب وردی سەحکە وێنەی! رەنگێن سەرەکی یێن وێنەی دەربینە (رەنگێ پاشخانەیا بەرگی coverBgColor، رەنگێ چوارچووڤە و نەخشان coverAccentColor و frameColor، رەنگێ ناڤونیشانی coverTitleColor و headingColor، رەنگێ ئایەت و نڤیسینا دیارکری verseColor، رەنگێ کاغەزێ paperColor، و رەنگێ نڤیسینا ناڤەڕۆکێ bodyColor).
+   - سەحکە شێوازێ چوارچووڤە و نەخشێ ناڤ وێنەی و نێزیکترین شێوازێ بەرگی (coverStyle: 'royal-frame' | 'islamic-arch' | 'modern-band' | 'classic-manuscript') و شێوازێ چوارچووڤێ ناڤەڕۆکێ (frameStyle: 'royal-manuscript' | 'islamic-mihrab' | 'classic-scholarly' | 'modern-clean' | 'academic-boxed' | 'ottoman-diwan') هەلبژێرە دا دیزاینا پەرتووکێ رێک وەکی وێنەی دەربکەڤیت!
+   - سەحکە کا چەند رەنگێن فۆنتان د وێنەی دا هەنە (١ رەنگ، ٢ رەنگ، یان ٣ رەنگ) و fontColorCount ل دویڤ وێ چەندێ رێکبێخە.
+٢. تۆ دەستکاریا نڤیسینا ناڤەڕۆکا لاپەران ناکەی (چونکی بکارئینەر بخۆ خەلەتیێن نڤیسینێ ب دەستێ خۆ چێدکەت). کارێ تە بتنێ دیزاینکرنا پەرتووکێ، دیزاینکرنا بەرگێ پەرتووکێ، چوارچووڤێ لاپەران، رەنگێ کاغەزێ، و رەنگێن فۆنتانە ل دویڤ دلێ بکارئینەری و وێنەیێ هنارتی!
+٣. سیستەمێ رەنگێن فۆنتان (fontColorCount):
+   - ئەگەر ١ رەنگ (ئێک رەنگ): fontColorCount بکە 1، و هەرسێ رەنگان (headingColor, verseColor, bodyColor) بکە ئێک رەنگێ جوان (بۆ نموونە رەش #111111، یان شینێ تاری #0F2942، یان قەهوەیی #3E2723).
+   - ئەگەر ٢ رەنگ (دوو رەنگ): fontColorCount بکە 2، کو رەنگێ ئێکێ (headingColor و verseColor) بۆ سەردێڕ و ئایەتانە، و رەنگێ دووێ (bodyColor) بۆ ناڤەڕۆک و شڕۆڤەیێ یە.
+   - ئەگەر ٣ رەنگ (سێ رەنگ): fontColorCount بکە 3، کو سێ رەنگێن جودا و هەڤگونجای هەبن:
+     * headingColor: رەنگێ سەردێڕ و بابەتێن سەرەکی (بۆ نموونە کەسکێ زومڕودی #065F46، یان شینێ شاهانە #1E3A8A، یان عەنابی #7F1D1D).
+     * verseColor: رەنگێ ئایەتێن قورئانێ ﴿...﴾ و فەرموودە و پەیڤێن گرنگ (بۆ نموونە زێڕین/برۆنزی #B45309، یان سۆرێ کلاسیکی #CC0000، یان فیرۆزی #0F766E).
+     * bodyColor: رەنگێ نڤیسینا ناڤەڕۆکێ (بۆ نموونە رەشێ نەرم #18181B یان #111111).
+٤. شێوازێ چوارچووڤێ ناڤەڕۆکا پەرتووکێ (frameStyle):
+   - 'classic-scholarly': دیزاینا شەرعی یا کلاسیکی
+   - 'royal-manuscript': دیزاینا شاهانە و دەستنڤیس ب چوارچووڤێ دەبل و نەخشێ گۆشەیان
+   - 'islamic-mihrab': دیزاینا میحرابی یا ئیسلامی
+   - 'modern-clean': دیزاینا مۆدێرن و سادە بێ چوارچووڤە
+   - 'academic-boxed': دیزاینا ئەکادیمی ب سەردێڕێن چوارچووڤەکری
+   - 'ottoman-diwan': دیزاینا دیوانا عوسمانی
+٥. دیزاینا بەرگێ پەرتووکێ (cover):
+   - coverStyle دشێت ببیتە: 'royal-frame' (چوارچووڤێ شاهانە)، 'islamic-arch' (نەخشێ میحرابی)، 'modern-band' (بەرگێ مۆدێرن)، یان 'classic-manuscript' (دەستنڤیسا کلاسیکی).
+   - coverBgColor: رەنگێ پاشخانەیا بەرگی (بۆ نموونە کەسکێ تاری #06392F، عەنابی #4A0E17، شینێ شەڤێ #0F1E36، کرێمی #FFFDF9، رەشێ زێڕین #18181B).
+   - coverAccentColor: رەنگێ چوارچووڤە و نەخشێن بەرگی (بۆ نموونە زێڕین #D4AF37، سۆر #CC0000، فیرۆزی #38BDF8).
+   - coverTitleColor: رەنگێ ناڤونیشانێ مەزن یێ پەرتووکێ ل سەر بەرگی.
+   - coverTextColor: رەنگێ ناڤێ دانەری و نڤیسینێن دی یێن بەرگی.
+   - ئەگەر بکارئینەری داخاز کر ناڤێ پەرتووکێ، ژێرناڤ (subtitle)، ناڤێ مامۆستای/دانەری (authorName)، یان ئایەتا سەر بەرگی بگوهۆڕیت، د ناڤ خانەیێن بەرگی دا بنڤیسە.
+٦. هەردەم بەرسڤەکا گەرم و رۆهن ب شێوەزارێ بادینی د ناڤ reply دا بنڤیسە کا تە چ دیزاین و چەند رەنگ بۆ پەرتووکێ و بەرگی چێکرن (و ئەگەر وێنە هنارتبوو، دیار بکە کا تە چەوا رەنگ و ستایلێ وێنەی ل سەر پەرتووکێ جێبەجێ کر).`;
 
-    const compactPageText = serializePageCompact(resolvedPageData);
+    const prompt = `${recentHistory ? `مێژوویا کورت:\n${recentHistory}\n\n` : ''}ناڤێ پەرتووکا نوکە: ${bookTitle || 'پەرتووکا بادینی'}
+دیزاینا نوکە یا پەرتووکێ:
+${JSON.stringify(baseDesign)}
 
-    const prompt = `${recentHistory ? `مێژوویا کورت:\n${recentHistory}\n\n` : ''}ناڤەڕۆکا لاپەرێ (${resolvedPageData.pageNumber}):
-${compactPageText}
-
-داخازا بکارئینەری:
+${hasImage ? 'بکارئینەری ئەڤ وێنەیە هنارتیە دا کو تۆ دیزاینا پەرتووکێ، بەرگێ پەرتووکێ و رەنگێن فۆنتان ل دویڤ رەنگ و شێوازێ ڤی وێنەی چێبکەی.\n' : ''}داخازا بکارئینەری بۆ دیزاینکرنا پەرتووکێ / بەرگی / رەنگێن فۆنتان:
 ${resolvedMessage}`;
+
+    let contentsPayload: string | Array<{ inlineData?: { data: string; mimeType: string }; text?: string }> = prompt;
+    if (hasImage && imageDataUrl) {
+      const cleanedBase64 = imageDataUrl.includes('base64,')
+        ? imageDataUrl.split('base64,')[1]
+        : imageDataUrl;
+      const detectedMime =
+        imageMimeType ||
+        (imageDataUrl.startsWith('data:image/png')
+          ? 'image/png'
+          : imageDataUrl.startsWith('data:image/webp')
+          ? 'image/webp'
+          : 'image/jpeg');
+
+      contentsPayload = [
+        {
+          inlineData: {
+            data: cleanedBase64,
+            mimeType: detectedMime,
+          },
+        },
+        {
+          text: prompt,
+        },
+      ];
+    }
 
     const response = await generateContentResilient(
       {
-        contents: prompt,
+        contents: contentsPayload,
         fastMode: true,
         config: {
           systemInstruction,
@@ -194,44 +126,77 @@ ${resolvedMessage}`;
             properties: {
               reply: {
                 type: Type.STRING,
-                description: 'بەرسڤا کورت ب بادینی کا تە چ راستڤەکر',
+                description: 'بەرسڤا کورت ب بادینی کا تە چ دیزاین بۆ بەرگی، ناڤەڕۆکێ، و رەنگێن فۆنتان چێکر',
               },
-              didModifyPage: {
+              didUpdateDesign: {
                 type: Type.BOOLEAN,
-                description: 'true ئەگەر تە گوهۆڕین د لاپەری دا کر',
+                description: 'true ئەگەر تە دیزاینا پەرتووکێ یان بەرگی یان رەنگێن فۆنتان گوهۆڕی',
               },
-              textReplacements: {
-                type: Type.ARRAY,
-                description: 'لیستا پەیڤ یان رێزێن کەڤن و نوی بۆ گوهۆڕینا بلەز',
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    find: { type: Type.STRING },
-                    replace: { type: Type.STRING },
-                  },
-                  required: ['find', 'replace'],
-                },
+              fontColorCount: {
+                type: Type.INTEGER,
+                description: 'ژمارەیا رەنگێن فۆنتان: 1 یان 2 یان 3',
               },
-              modifiedBlocks: {
-                type: Type.ARRAY,
-                description: 'بتنێ ئەو بلۆکێن هاتینە گوهۆڕین ب ژمارا وان (blockIndex)',
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    blockIndex: { type: Type.INTEGER },
-                    type: { type: Type.STRING },
-                    text: { type: Type.STRING },
-                    align: { type: Type.STRING },
-                  },
-                  required: ['blockIndex', 'text'],
-                },
+              headingColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ سەردێڕان (Hex، بۆ نموونە #065F46 یان #CC0000)',
               },
-              updatedFootnotes: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
+              verseColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ ئایەت و فەرموودە و پەیڤێن دیارکری (Hex)',
+              },
+              bodyColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ فۆنتێ ناڤەڕۆکا پەرتووکێ (Hex)',
+              },
+              paperColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ کاغەزا لاپەرێن ناڤەڕۆکێ (Hex، هەردەم رەنگەکێ ڤەکری دا خوێندن بساناهی بیت)',
+              },
+              frameStyle: {
+                type: Type.STRING,
+                description: 'classic-scholarly | royal-manuscript | islamic-mihrab | modern-clean | academic-boxed | ottoman-diwan',
+              },
+              frameColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ چوارچووڤێ لاپەری (Hex)',
+              },
+              headingBoxed: {
+                type: Type.BOOLEAN,
+                description: 'true ئەگەر سەردێڕ د ناڤ چوارچووڤەیەکی دا بن',
+              },
+              coverStyle: {
+                type: Type.STRING,
+                description: 'classic-manuscript | royal-frame | islamic-arch | modern-band',
+              },
+              coverBgColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ پاشخانەیا بەرگێ پەرتووکێ (Hex)',
+              },
+              coverAccentColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ چوارچووڤە و نەخشێن بەرگی (Hex)',
+              },
+              coverTitleColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ ناڤونیشانێ پەرتووکێ ل سەر بەرگی (Hex)',
+              },
+              coverTextColor: {
+                type: Type.STRING,
+                description: 'کۆدێ رەنگێ نڤیسینێن دی یێن سەر بەرگی (Hex)',
+              },
+              coverKicker: { type: Type.STRING },
+              coverTitle: { type: Type.STRING },
+              coverSubtitle: { type: Type.STRING },
+              coverAuthorLabel: { type: Type.STRING },
+              coverAuthorName: { type: Type.STRING },
+              coverFooterVerse: { type: Type.STRING },
+              coverFooterRef: { type: Type.STRING },
+              recommendedFontId: {
+                type: Type.STRING,
+                description: 'Optional: original | naskh | scheherazade | lateef | vazirmatn | cairo | kufi',
               },
             },
-            required: ['reply', 'didModifyPage'],
+            required: ['reply', 'didUpdateDesign'],
           },
         },
       },
@@ -241,104 +206,143 @@ ${resolvedMessage}`;
     const rawJson = response.text?.trim() || '{}';
     const parsed = parseOrRepairJson<{
       reply?: string;
-      didModifyPage?: boolean;
-      textReplacements?: { find: string; replace: string }[];
-      modifiedBlocks?: { blockIndex: number; type?: string; text: string; align?: string }[];
-      updatedFootnotes?: string[];
+      didUpdateDesign?: boolean;
+      fontColorCount?: number;
+      headingColor?: string;
+      verseColor?: string;
+      bodyColor?: string;
+      paperColor?: string;
+      frameStyle?: BookDesignConfig['frameStyle'];
+      frameColor?: string;
+      headingBoxed?: boolean;
+      coverStyle?: BookDesignConfig['cover']['style'];
+      coverBgColor?: string;
+      coverAccentColor?: string;
+      coverTitleColor?: string;
+      coverTextColor?: string;
+      coverKicker?: string;
+      coverTitle?: string;
+      coverSubtitle?: string;
+      coverAuthorLabel?: string;
+      coverAuthorName?: string;
+      coverFooterVerse?: string;
+      coverFooterRef?: string;
+      recommendedFontId?: string;
     }>(rawJson);
 
-    let updatedPage: BookPageData | undefined = undefined;
+    const validColorCount: 1 | 2 | 3 =
+      parsed.fontColorCount === 1
+        ? 1
+        : parsed.fontColorCount === 3
+        ? 3
+        : parsed.fontColorCount === 2
+        ? 2
+        : baseDesign.fontColorCount;
 
-    if (parsed.didModifyPage) {
-      let nextBlocks: BookBlock[] = [...resolvedPageData.blocks];
-      let nextFootnotes: string[] | undefined = resolvedPageData.footnotes
-        ? [...resolvedPageData.footnotes]
-        : undefined;
+    const validFrameStyles: BookDesignConfig['frameStyle'][] = [
+      'classic-scholarly',
+      'royal-manuscript',
+      'islamic-mihrab',
+      'modern-clean',
+      'academic-boxed',
+      'ottoman-diwan',
+    ];
+    const nextFrameStyle =
+      parsed.frameStyle && validFrameStyles.includes(parsed.frameStyle)
+        ? parsed.frameStyle
+        : baseDesign.frameStyle;
 
-      // Apply exact substring replacements first
-      if (Array.isArray(parsed.textReplacements) && parsed.textReplacements.length > 0) {
-        for (const rep of parsed.textReplacements) {
-          if (!rep || !rep.find) continue;
-          nextBlocks = nextBlocks.map((b) => applyTextReplacementToBlock(b, rep.find, rep.replace ?? '').block);
-          if (nextFootnotes) {
-            nextFootnotes = nextFootnotes.map((fn) =>
-              fn.includes(rep.find) ? fn.split(rep.find).join(rep.replace ?? '') : fn
-            );
-          }
-        }
-      }
+    const validCoverStyles: BookDesignConfig['cover']['style'][] = [
+      'classic-manuscript',
+      'royal-frame',
+      'islamic-arch',
+      'modern-band',
+    ];
+    const nextCoverStyle =
+      parsed.coverStyle && validCoverStyles.includes(parsed.coverStyle)
+        ? parsed.coverStyle
+        : baseDesign.cover.style;
 
-      // Apply targeted block updates by blockIndex
-      if (Array.isArray(parsed.modifiedBlocks) && parsed.modifiedBlocks.length > 0) {
-        for (const mod of parsed.modifiedBlocks) {
-          if (!mod || typeof mod.blockIndex !== 'number') continue;
-          const idx = mod.blockIndex;
-          if (idx >= 0 && idx < nextBlocks.length) {
-            const orig = nextBlocks[idx];
-            const targetType = mod.type || orig.type;
-            if (targetType === 'heading') {
-              nextBlocks[idx] = {
-                type: 'heading',
-                text: String(mod.text ?? ''),
-                align: mod.align === 'right' ? 'right' : orig.type === 'heading' && orig.align ? orig.align : 'center',
-                size: orig.type === 'heading' && orig.size ? orig.size : 'md',
-              };
-            } else if (targetType === 'paragraph' || orig.type === 'paragraph') {
-              nextBlocks[idx] = {
-                type: 'paragraph',
-                text: String(mod.text ?? ''),
-                align:
-                  mod.align === 'center' || mod.align === 'right'
-                    ? mod.align
-                    : orig.type === 'paragraph' && orig.align
-                    ? orig.align
-                    : 'justify',
-              };
-            } else if (orig.type === 'cover') {
-              nextBlocks[idx] = {
-                ...orig,
-                titleLines: [String(mod.text ?? orig.titleLines.join(' '))],
-              };
-            }
-          } else if (idx >= nextBlocks.length && mod.text) {
-            // Appended a new block at the end
-            if (mod.type === 'heading') {
-              nextBlocks.push({
-                type: 'heading',
-                text: String(mod.text),
-                align: 'center',
-              });
-            } else {
-              nextBlocks.push({
-                type: 'paragraph',
-                text: String(mod.text),
-                align: 'justify',
-              });
-            }
-          }
-        }
-      }
+    const nextHeadingClr = parsed.headingColor || baseDesign.headingColor;
+    const nextVerseClr = parsed.verseColor || baseDesign.verseColor;
+    const nextBodyClr = parsed.bodyColor || baseDesign.bodyColor;
+    const nextCoverAccent = parsed.coverAccentColor || baseDesign.cover.accentColor;
 
-      if (Array.isArray(parsed.updatedFootnotes)) {
-        nextFootnotes = parsed.updatedFootnotes.map(String);
-      }
-
-      updatedPage = {
-        ...resolvedPageData,
-        blocks: nextBlocks,
-        footnotes: nextFootnotes,
-      };
-    }
+    const updatedDesign: BookDesignConfig = {
+      ...baseDesign,
+      id: 'custom-ai-design',
+      presetId: 'custom-ai-design',
+      name: 'دیزاینا تایبەت ب رێکا بۆتێ دیزاینەری',
+      nameKurdish: 'دیزاینا تایبەت ب رێکا بۆتێ دیزاینەری',
+      fontColorCount: validColorCount,
+      headingColor: nextHeadingClr,
+      verseColor: nextVerseClr,
+      bodyColor: nextBodyClr,
+      paperColor: parsed.paperColor || baseDesign.paperColor,
+      frameStyle: nextFrameStyle,
+      frameColor: parsed.frameColor || baseDesign.frameColor,
+      headingBoxed:
+        typeof parsed.headingBoxed === 'boolean' ? parsed.headingBoxed : baseDesign.headingBoxed,
+      cover: {
+        ...baseDesign.cover,
+        style: nextCoverStyle,
+        bgColor: parsed.coverBgColor || baseDesign.cover.bgColor,
+        accentColor: nextCoverAccent,
+        borderColor: nextCoverAccent,
+        titleColor: parsed.coverTitleColor || baseDesign.cover.titleColor,
+        textColor: parsed.coverTextColor || baseDesign.cover.textColor,
+        kicker: parsed.coverKicker !== undefined ? parsed.coverKicker : baseDesign.cover.kicker,
+        title: parsed.coverTitle !== undefined ? parsed.coverTitle : baseDesign.cover.title,
+        titleLines:
+          parsed.coverTitle !== undefined && parsed.coverTitle.trim()
+            ? parsed.coverTitle.split('\n')
+            : baseDesign.cover.titleLines,
+        subtitle:
+          parsed.coverSubtitle !== undefined ? parsed.coverSubtitle : baseDesign.cover.subtitle,
+        authorLabel:
+          parsed.coverAuthorLabel !== undefined
+            ? parsed.coverAuthorLabel
+            : baseDesign.cover.authorLabel,
+        compilerLabel:
+          parsed.coverAuthorLabel !== undefined
+            ? parsed.coverAuthorLabel
+            : baseDesign.cover.compilerLabel,
+        authorName:
+          parsed.coverAuthorName !== undefined
+            ? parsed.coverAuthorName
+            : baseDesign.cover.authorName,
+        compilerName:
+          parsed.coverAuthorName !== undefined
+            ? parsed.coverAuthorName
+            : baseDesign.cover.compilerName,
+        footerVerse:
+          parsed.coverFooterVerse !== undefined
+            ? parsed.coverFooterVerse
+            : baseDesign.cover.footerVerse,
+        verse:
+          parsed.coverFooterVerse !== undefined
+            ? parsed.coverFooterVerse
+            : baseDesign.cover.verse,
+        footerRef:
+          parsed.coverFooterRef !== undefined ? parsed.coverFooterRef : baseDesign.cover.footerRef,
+        verseRef:
+          parsed.coverFooterRef !== undefined ? parsed.coverFooterRef : baseDesign.cover.verseRef,
+      },
+    };
 
     return NextResponse.json({
-      reply: parsed.reply || 'گوهۆڕین ب لەزاتی هاتە ئەنجامدان.',
-      didModifyPage: Boolean(parsed.didModifyPage),
-      updatedPage,
+      reply:
+        parsed.reply ||
+        'دیزاینا پەرتووکێ و بەرگی و رەنگێن فۆنتان ل دویڤ داخازا تە هاتە نوێکرن!',
+      didUpdateDesign: parsed.didUpdateDesign !== false,
+      updatedDesign,
+      recommendedFontId: parsed.recommendedFontId,
     });
   } catch (error: unknown) {
     return NextResponse.json(
-      { error: sanitizeErrorMessageKurdish(error, 'شاشیەک د پەیوەندیا چاتی دا چێبوو') },
+      { error: sanitizeErrorMessageKurdish(error, 'شاشیەک د پەیوەندیا بۆتێ دیزاینەری دا چێبوو') },
       { status: 500 }
     );
   }
 }
+

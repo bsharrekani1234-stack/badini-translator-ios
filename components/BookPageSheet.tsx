@@ -3,8 +3,11 @@
 import React, { useEffect, useState } from 'react';
 import {
   BOOK_HEADER_TITLE,
+  BookDesignConfig,
   BookPageData,
+  DEFAULT_BOOK_DESIGN,
   parseRichText,
+  resolveEffectiveColors,
   toEasternArabicNumerals,
 } from '@/lib/book-types';
 
@@ -14,33 +17,50 @@ interface BookPageSheetProps {
   zoom?: number;
   headerTitle?: string;
   bookFontFamily?: string;
+  design?: BookDesignConfig;
   onEditPageClick?: (pageNumber: number) => void;
 }
 
 export function RenderRichTokens({
   text,
   defaultColor = 'black',
+  isHeadingBlock = false,
+  headingHex = '#CC0000',
+  verseHex = '#CC0000',
+  bodyHex = '#111111',
 }: {
   text: string;
   defaultColor?: 'black' | 'red';
+  isHeadingBlock?: boolean;
+  headingHex?: string;
+  verseHex?: string;
+  bodyHex?: string;
 }) {
   const tokens = parseRichText(text, defaultColor);
   return (
     <>
-      {tokens.map((tok, idx) => (
-        <span
-          key={idx}
-          className={
-            tok.color === 'red'
-              ? 'text-[#CC0000] font-bold'
-              : tok.bold
-              ? 'text-[#111111] font-bold'
-              : 'text-[#111111]'
-          }
-        >
-          {tok.text}
-        </span>
-      ))}
+      {tokens.map((tok, idx) => {
+        let tokenColor = bodyHex;
+        if (isHeadingBlock) {
+          tokenColor = tok.role === 'verse' && tok.text.startsWith('﴿') ? verseHex : headingHex;
+        } else if (tok.role === 'heading') {
+          tokenColor = headingHex;
+        } else if (tok.color === 'red' || tok.role === 'verse') {
+          tokenColor = verseHex;
+        } else {
+          tokenColor = bodyHex;
+        }
+
+        return (
+          <span
+            key={idx}
+            style={{ color: tokenColor }}
+            className={tok.color === 'red' || tok.bold || isHeadingBlock ? 'font-bold' : undefined}
+          >
+            {tok.text}
+          </span>
+        );
+      })}
     </>
   );
 }
@@ -51,6 +71,7 @@ export function BookPageSheet({
   zoom = 1,
   headerTitle = BOOK_HEADER_TITLE,
   bookFontFamily,
+  design = DEFAULT_BOOK_DESIGN,
   onEditPageClick,
 }: BookPageSheetProps) {
   const [viewportWidth, setViewportWidth] = useState<number>(1200);
@@ -68,6 +89,10 @@ export function BookPageSheet({
   const isOdd = page.pageNumber % 2 === 1;
   const pageNumEastern = toEasternArabicNumerals(page.pageNumber);
 
+  const { headingHex, verseHex, bodyHex, paperHex, frameHex } = resolveEffectiveColors(design);
+  const hasCoverBlock = page.blocks.some((b) => b.type === 'cover');
+  const coverCfg = design?.cover || DEFAULT_BOOK_DESIGN.cover;
+
   // On desktop: exact 595 x 842 pt A4 dimensions scaled by zoom.
   // On mobile: fluid width fitting the phone screen with comfortable reading margins & legible font size!
   const effectiveZoom = isMobile ? 1 : zoom;
@@ -78,6 +103,9 @@ export function BookPageSheet({
   const padBottom = isMobile ? 28 : Math.round(108 * zoom);
   const padX = isMobile ? 22 : Math.round(112 * zoom);
   const scaledFontPx = isMobile ? Math.max(15, fontSizePt) : fontSizePt * effectiveZoom;
+
+  const effectiveBgColor = hasCoverBlock ? coverCfg.bgColor || paperHex : paperHex;
+  const frameStyle = design?.frameStyle || 'classic-scholarly';
 
   return (
     <div
@@ -91,21 +119,106 @@ export function BookPageSheet({
         paddingLeft: `${padX}px`,
         paddingRight: `${padX}px`,
         fontFamily: bookFontFamily || undefined,
+        backgroundColor: effectiveBgColor,
+        color: bodyHex,
       }}
-      className="book-page-sheet relative bg-[#FFFDF9] text-[#111111] font-book rounded-sm shadow-[0_10px_35px_-5px_rgba(28,25,23,0.10),0_2px_10px_-2px_rgba(28,25,23,0.05)] border border-[#E5DEC9] flex flex-col justify-between select-text mx-auto transition-all duration-150"
+      className="book-page-sheet relative font-book rounded-[22px] sm:rounded-md shadow-[0_18px_42px_-8px_rgba(15,23,42,0.12),0_4px_12px_-2px_rgba(15,23,42,0.06),inset_0_2px_3px_rgba(255,255,255,0.65)] border border-white/90 ring-1 ring-[#E5DEC9]/80 flex flex-col justify-between select-text mx-auto transition-all duration-150 overflow-hidden"
     >
-      {/* Subtle decorative inner frame on desktop */}
-      <div className="pointer-events-none hidden sm:block absolute inset-3 border border-[#EFE9D8]/70 rounded-xs" />
+      {/* Interior Page Frame Variations (when not on cover page) */}
+      {!hasCoverBlock && frameStyle !== 'modern-clean' && (
+        <>
+          <div
+            style={{ borderColor: frameHex }}
+            className={`pointer-events-none absolute inset-2.5 sm:inset-3 rounded-[16px] sm:rounded-xs ${
+              frameStyle === 'royal-manuscript' || frameStyle === 'ottoman-diwan'
+                ? 'border-2'
+                : 'border'
+            }`}
+          />
+          {(frameStyle === 'royal-manuscript' ||
+            frameStyle === 'islamic-mihrab' ||
+            frameStyle === 'ottoman-diwan') && (
+            <div
+              style={{ borderColor: frameHex }}
+              className="pointer-events-none absolute inset-4 sm:inset-5 border border-dashed opacity-75 rounded-[12px] sm:rounded-none"
+            />
+          )}
+          {(frameStyle === 'royal-manuscript' || frameStyle === 'islamic-mihrab') && (
+            <>
+              <span
+                style={{ color: headingHex }}
+                className="pointer-events-none absolute top-2 right-3 text-xs opacity-70 select-none"
+              >
+                ❖
+              </span>
+              <span
+                style={{ color: headingHex }}
+                className="pointer-events-none absolute top-2 left-3 text-xs opacity-70 select-none"
+              >
+                ❖
+              </span>
+              <span
+                style={{ color: headingHex }}
+                className="pointer-events-none absolute bottom-2 right-3 text-xs opacity-70 select-none"
+              >
+                ❖
+              </span>
+              <span
+                style={{ color: headingHex }}
+                className="pointer-events-none absolute bottom-2 left-3 text-xs opacity-70 select-none"
+              >
+                ❖
+              </span>
+            </>
+          )}
+        </>
+      )}
 
-      {/* Top interactive edit button (hidden in print) */}
+      {/* Cover Page Ornate Outer & Inner Frames */}
+      {hasCoverBlock && (
+        <>
+          <div
+            style={{ borderColor: coverCfg.accentColor || headingHex }}
+            className="pointer-events-none absolute inset-3 sm:inset-4 border-2 rounded-[16px] sm:rounded-xs"
+          />
+          <div
+            style={{ borderColor: coverCfg.accentColor || headingHex }}
+            className="pointer-events-none absolute inset-5 sm:inset-6 border opacity-75 rounded-[12px] sm:rounded-xs"
+          />
+          {coverCfg.style === 'modern-band' && (
+            <div
+              style={{ backgroundColor: coverCfg.accentColor || headingHex }}
+              className="pointer-events-none absolute top-0 inset-x-0 h-5 opacity-90"
+            />
+          )}
+          {(coverCfg.style === 'royal-frame' || coverCfg.style === 'islamic-arch') && (
+            <>
+              <div
+                style={{ color: coverCfg.accentColor || headingHex }}
+                className="pointer-events-none absolute top-6 inset-x-0 text-center text-sm tracking-[0.4em] font-bold opacity-90 select-none"
+              >
+                ✦ ❖ ۞ ❖ ✦
+              </div>
+              <div
+                style={{ color: coverCfg.accentColor || headingHex }}
+                className="pointer-events-none absolute bottom-6 inset-x-0 text-center text-sm tracking-[0.4em] font-bold opacity-90 select-none"
+              >
+                ✦ ❖ ۞ ❖ ✦
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {/* Top interactive 3D edit button (hidden in print) */}
       {onEditPageClick && (
         <button
           type="button"
           onClick={() => onEditPageClick(page.pageNumber)}
           title="دەستکاریکرنا ڤی لاپەری"
-          className="no-print absolute top-2.5 left-2.5 opacity-95 sm:opacity-85 hover:opacity-100 focus:opacity-100 px-3 py-1 text-[11px] font-sans font-semibold bg-[#FAF8F3]/95 hover:bg-[#9A3412] text-stone-800 hover:text-white border border-[#DED6C3] hover:border-[#9A3412] rounded-lg transition-all cursor-pointer z-10 shadow-2xs"
+          className="no-print absolute top-2.5 left-2.5 opacity-95 sm:opacity-90 hover:opacity-100 focus:opacity-100 px-3.5 py-1.5 text-[11px] font-sans font-bold bg-white hover:bg-[#0F0F12] text-stone-800 hover:text-white rounded-full shadow-[0_4px_12px_rgba(0,0,0,0.08),inset_0_1px_2px_#ffffff] border border-stone-200/80 transition-all cursor-pointer z-10"
         >
-          ✎ دەستکاریکرنا لاپەری {pageNumEastern}
+          ✎ دەستکاریا لاپەری {pageNumEastern}
         </button>
       )}
 
@@ -114,8 +227,12 @@ export function BookPageSheet({
         {/* Running Header when page.showHeader is true */}
         {page.showHeader && page.pageNumber >= 2 && (
           <div
-            style={{ marginBottom: `${isMobile ? 16 : Math.round(18 * effectiveZoom)}px` }}
-            className="border-b-[1.5px] border-[#CC0000] pb-2 flex items-center justify-between gap-3 text-[#CC0000] font-bold"
+            style={{
+              marginBottom: `${isMobile ? 16 : Math.round(18 * effectiveZoom)}px`,
+              borderColor: headingHex,
+              color: headingHex,
+            }}
+            className="border-b-[1.5px] pb-2 flex items-center justify-between gap-3 font-bold"
           >
             {isOdd ? (
               <>
@@ -159,60 +276,150 @@ export function BookPageSheet({
             }
 
             if (block.type === 'cover') {
+              const cTitleColor = coverCfg.titleColor || headingHex;
+              const cTextColor = coverCfg.textColor || bodyHex;
+              const cAccentColor = coverCfg.accentColor || verseHex;
+
+              const displayKicker =
+                coverCfg.kicker !== undefined && coverCfg.kicker.trim() !== ''
+                  ? coverCfg.kicker
+                  : block.kicker;
+              const displayTitleLines =
+                coverCfg.title !== undefined && coverCfg.title.trim() !== ''
+                  ? coverCfg.title.split('\n')
+                  : block.titleLines;
+              const displaySubtitle = coverCfg.subtitle?.trim() || '';
+              const displayAuthorLabel =
+                coverCfg.authorLabel !== undefined && coverCfg.authorLabel.trim() !== ''
+                  ? coverCfg.authorLabel
+                  : block.compilerLabel;
+              const displayAuthorName =
+                coverCfg.authorName !== undefined && coverCfg.authorName.trim() !== ''
+                  ? coverCfg.authorName
+                  : block.compilerName;
+              const displayVerse =
+                coverCfg.footerVerse !== undefined && coverCfg.footerVerse.trim() !== ''
+                  ? coverCfg.footerVerse
+                  : block.verse;
+              const displayVerseRef =
+                coverCfg.footerRef !== undefined && coverCfg.footerRef.trim() !== ''
+                  ? coverCfg.footerRef
+                  : block.verseRef;
+
               return (
                 <div
                   key={bIdx}
-                  className="flex-1 flex flex-col items-center justify-between py-8 sm:py-12 text-center"
+                  className="flex-1 flex flex-col items-center justify-between py-6 sm:py-10 text-center"
                 >
-                  <div className="mt-6 sm:mt-10 flex flex-col items-center space-y-5 sm:space-y-7">
-                    <div
-                      style={{ fontSize: `${isMobile ? 21 : Math.round(25 * effectiveZoom)}px` }}
-                      className="font-bold text-[#111111]"
-                    >
-                      {block.kicker}
-                    </div>
-                    {block.titleLines.map((line, lIdx) => (
+                  <div className="mt-4 sm:mt-8 w-full flex flex-col items-center space-y-4 sm:space-y-6">
+                    {displayKicker && (
                       <div
-                        key={lIdx}
-                        style={{ fontSize: `${isMobile ? 26 : Math.round(31 * effectiveZoom)}px` }}
-                        className="font-bold text-[#CC0000] leading-snug"
+                        style={{
+                          fontSize: `${isMobile ? 19 : Math.round(22 * effectiveZoom)}px`,
+                          color: cTextColor,
+                        }}
+                        className="font-bold tracking-wide"
                       >
-                        {line}
+                        {displayKicker}
                       </div>
-                    ))}
-                    {block.compilerLabel && (
-                      <div className="pt-4 space-y-1 text-[#111111] font-bold">
+                    )}
+
+                    {/* Title Ornamental Frame Box based on Cover Style */}
+                    <div
+                      style={{
+                        borderColor: cAccentColor,
+                        backgroundColor:
+                          coverCfg.style === 'royal-frame' || coverCfg.style === 'islamic-arch'
+                            ? 'rgba(255,255,255,0.06)'
+                            : undefined,
+                      }}
+                      className={`w-full px-4 py-5 sm:py-7 ${
+                        coverCfg.style === 'royal-frame'
+                          ? 'border-y-2 border-x rounded-2xl'
+                          : coverCfg.style === 'islamic-arch'
+                          ? 'border-2 rounded-t-[44px] rounded-b-2xl'
+                          : coverCfg.style === 'modern-band'
+                          ? 'border-r-4 pr-4'
+                          : 'border-y border-dashed'
+                      } space-y-3`}
+                    >
+                      {displayTitleLines.map((line, lIdx) => (
+                        <div
+                          key={lIdx}
+                          style={{
+                            fontSize: `${isMobile ? 25 : Math.round(30 * effectiveZoom)}px`,
+                            color: cTitleColor,
+                          }}
+                          className="font-bold leading-snug"
+                        >
+                          {line}
+                        </div>
+                      ))}
+
+                      {displaySubtitle && (
                         <div
                           style={{
-                            fontSize: `${isMobile ? 15 : Math.round(16 * effectiveZoom)}px`,
+                            fontSize: `${isMobile ? 15 : Math.round(17 * effectiveZoom)}px`,
+                            color: cAccentColor,
                           }}
+                          className="font-bold pt-1"
                         >
-                          {block.compilerLabel}
+                          {displaySubtitle}
                         </div>
-                        <div
-                          style={{
-                            fontSize: `${isMobile ? 16 : Math.round(17 * effectiveZoom)}px`,
-                          }}
-                        >
-                          {block.compilerName}
-                        </div>
+                      )}
+                    </div>
+
+                    {(displayAuthorLabel || displayAuthorName) && (
+                      <div
+                        style={{ color: cTextColor }}
+                        className="pt-3 space-y-1 font-bold"
+                      >
+                        {displayAuthorLabel && (
+                          <div
+                            style={{
+                              fontSize: `${isMobile ? 14.5 : Math.round(15.5 * effectiveZoom)}px`,
+                              color: cAccentColor,
+                            }}
+                          >
+                            {displayAuthorLabel}
+                          </div>
+                        )}
+                        {displayAuthorName && (
+                          <div
+                            style={{
+                              fontSize: `${isMobile ? 16.5 : Math.round(18 * effectiveZoom)}px`,
+                              color: cTextColor,
+                            }}
+                          >
+                            {displayAuthorName}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
 
-                  <div className="mt-8 mb-4 space-y-2 text-center">
-                    <div
-                      style={{ fontSize: `${isMobile ? 15 : Math.round(15 * effectiveZoom)}px` }}
-                      className="text-[#CC0000] font-bold leading-relaxed"
-                    >
-                      {block.verse}
-                    </div>
-                    <div
-                      style={{ fontSize: `${isMobile ? 14 : Math.round(15 * effectiveZoom)}px` }}
-                      className="text-[#111111]"
-                    >
-                      {block.verseRef}
-                    </div>
+                  <div className="mt-6 mb-4 space-y-2 text-center w-full">
+                    {displayVerse && (
+                      <div
+                        style={{
+                          fontSize: `${isMobile ? 14.5 : Math.round(15 * effectiveZoom)}px`,
+                          color: cAccentColor,
+                        }}
+                        className="font-bold leading-relaxed"
+                      >
+                        {displayVerse}
+                      </div>
+                    )}
+                    {displayVerseRef && (
+                      <div
+                        style={{
+                          fontSize: `${isMobile ? 13.5 : Math.round(14.5 * effectiveZoom)}px`,
+                          color: cTextColor,
+                        }}
+                      >
+                        {displayVerseRef}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -232,8 +439,9 @@ export function BookPageSheet({
                         marginBottom: line.gapAfter
                           ? `${isMobile ? 18 : Math.round(22 * effectiveZoom)}px`
                           : undefined,
+                        color: line.bold ? headingHex : bodyHex,
                       }}
-                      className={line.bold ? 'font-bold text-[#111111]' : 'text-[#111111]'}
+                      className={line.bold ? 'font-bold' : ''}
                     >
                       {line.text}
                     </div>
@@ -249,8 +457,11 @@ export function BookPageSheet({
                   className="flex-1 flex flex-col items-center justify-center text-center space-y-6 py-14"
                 >
                   <div
-                    style={{ fontSize: `${isMobile ? 22 : Math.round(25 * effectiveZoom)}px` }}
-                    className="font-bold text-[#111111]"
+                    style={{
+                      fontSize: `${isMobile ? 22 : Math.round(25 * effectiveZoom)}px`,
+                      color: headingHex,
+                    }}
+                    className="font-bold"
                   >
                     {block.bismillah}
                   </div>
@@ -258,8 +469,11 @@ export function BookPageSheet({
                     {block.subLines.map((sub, sIdx) => (
                       <div
                         key={sIdx}
-                        style={{ fontSize: `${isMobile ? 18 : Math.round(20 * effectiveZoom)}px` }}
-                        className="font-bold text-[#CC0000]"
+                        style={{
+                          fontSize: `${isMobile ? 18 : Math.round(20 * effectiveZoom)}px`,
+                          color: verseHex,
+                        }}
+                        className="font-bold"
                       >
                         {sub}
                       </div>
@@ -276,8 +490,11 @@ export function BookPageSheet({
                   className="flex-1 flex flex-col justify-center space-y-4 py-12"
                 >
                   <div
-                    style={{ fontSize: `${isMobile ? 15.5 : Math.round(16 * effectiveZoom)}px` }}
-                    className="font-bold text-[#111111] text-right"
+                    style={{
+                      fontSize: `${isMobile ? 15.5 : Math.round(16 * effectiveZoom)}px`,
+                      color: headingHex,
+                    }}
+                    className="font-bold text-right"
                   >
                     {block.intro}
                   </div>
@@ -285,14 +502,18 @@ export function BookPageSheet({
                     style={{
                       fontSize: `${isMobile ? 16.5 : Math.round(17 * effectiveZoom)}px`,
                       lineHeight: 1.85,
+                      color: verseHex,
                     }}
-                    className="font-bold text-[#CC0000] text-center"
+                    className="font-bold text-center"
                   >
                     {block.verse}
                   </div>
                   <div
-                    style={{ fontSize: `${isMobile ? 14.5 : Math.round(15.5 * effectiveZoom)}px` }}
-                    className="text-[#111111] text-right pr-6"
+                    style={{
+                      fontSize: `${isMobile ? 14.5 : Math.round(15.5 * effectiveZoom)}px`,
+                      color: bodyHex,
+                    }}
+                    className="text-right pr-6"
                   >
                     {block.verseRef}
                   </div>
@@ -308,22 +529,34 @@ export function BookPageSheet({
                   ? scaledFontPx - 0.5 * effectiveZoom
                   : scaledFontPx + 1.5 * effectiveZoom;
 
+              const isBoxed =
+                design?.headingBoxed ||
+                frameStyle === 'academic-boxed' ||
+                frameStyle === 'royal-manuscript';
+
               return (
                 <div
                   key={bIdx}
                   style={{
                     fontSize: `${hSize}px`,
                     lineHeight: 1.65,
-                    marginTop: `${Math.round(5 * effectiveZoom)}px`,
-                    marginBottom: `${Math.round(7 * effectiveZoom)}px`,
+                    marginTop: `${Math.round(6 * effectiveZoom)}px`,
+                    marginBottom: `${Math.round(8 * effectiveZoom)}px`,
+                    color: block.color === 'black' ? bodyHex : headingHex,
+                    borderColor: isBoxed ? frameHex : undefined,
+                    backgroundColor: isBoxed ? 'rgba(0,0,0,0.025)' : undefined,
                   }}
                   className={`font-bold ${
-                    block.color === 'black' ? 'text-[#111111]' : 'text-[#CC0000]'
+                    isBoxed ? 'px-3 py-1.5 rounded-lg border' : ''
                   } ${block.align === 'right' ? 'text-right' : 'text-center'}`}
                 >
                   <RenderRichTokens
                     text={block.text}
                     defaultColor={block.color === 'black' ? 'black' : 'red'}
+                    isHeadingBlock={block.color !== 'black'}
+                    headingHex={headingHex}
+                    verseHex={verseHex}
+                    bodyHex={bodyHex}
                   />
                 </div>
               );
@@ -337,8 +570,9 @@ export function BookPageSheet({
                     fontSize: `${isMobile ? 17 : Math.round(18 * effectiveZoom)}px`,
                     marginTop: `${Math.round(8 * effectiveZoom)}px`,
                     marginBottom: `${Math.round(8 * effectiveZoom)}px`,
+                    color: verseHex,
                   }}
-                  className="text-center font-bold text-[#CC0000] tracking-[0.5em]"
+                  className="text-center font-bold tracking-[0.5em]"
                 >
                   * * *
                 </div>
@@ -354,11 +588,12 @@ export function BookPageSheet({
                       style={{
                         fontSize: `${scaledFontPx - 0.5 * effectiveZoom}px`,
                         lineHeight: 1.65,
+                        color: bodyHex,
                       }}
                       className="flex flex-col space-y-0.5"
                     >
-                      <div className="text-right font-medium text-[#111111]">{c.right}</div>
-                      <div className="text-left font-medium text-[#111111]">{c.left}</div>
+                      <div className="text-right font-medium">{c.right}</div>
+                      <div className="text-left font-medium">{c.left}</div>
                     </div>
                   ))}
                 </div>
@@ -370,16 +605,22 @@ export function BookPageSheet({
                 <div key={bIdx} className="space-y-2">
                   {block.heading && (
                     <div
-                      style={{ fontSize: `${isMobile ? 18 : Math.round(20 * effectiveZoom)}px` }}
-                      className="text-center font-bold text-[#CC0000] mb-3"
+                      style={{
+                        fontSize: `${isMobile ? 18 : Math.round(20 * effectiveZoom)}px`,
+                        color: headingHex,
+                      }}
+                      className="text-center font-bold mb-3"
                     >
                       {block.heading}
                     </div>
                   )}
                   {block.colRightLabel && block.colLeftLabel && (
                     <div
-                      style={{ fontSize: `${isMobile ? 14 : Math.round(15 * effectiveZoom)}px` }}
-                      className="flex items-center justify-between font-bold text-[#CC0000] mb-2"
+                      style={{
+                        fontSize: `${isMobile ? 14 : Math.round(15 * effectiveZoom)}px`,
+                        color: verseHex,
+                      }}
+                      className="flex items-center justify-between font-bold mb-2"
                     >
                       <span>{block.colRightLabel}</span>
                       <span>{block.colLeftLabel}</span>
@@ -392,12 +633,18 @@ export function BookPageSheet({
                         style={{
                           fontSize: `${isMobile ? 14 : Math.round(14.5 * effectiveZoom)}px`,
                           lineHeight: 1.65,
+                          color: bodyHex,
                         }}
-                        className="flex items-baseline justify-between gap-2 text-[#111111]"
+                        className="flex items-baseline justify-between gap-2"
                       >
                         <span className="shrink-0 max-w-[82%]">{item.title}</span>
                         <span className="flex-1 border-b border-dotted border-stone-400 mx-1" />
-                        <span className="shrink-0 font-bold tabular-nums">{item.page}</span>
+                        <span
+                          style={{ color: headingHex }}
+                          className="shrink-0 font-bold tabular-nums"
+                        >
+                          {item.page}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -423,12 +670,16 @@ export function BookPageSheet({
                     fontSize: `${scaledFontPx}px`,
                     lineHeight: isMobile ? 1.85 : 1.78,
                     marginBottom: `${Math.round(5 * effectiveZoom)}px`,
+                    color: bodyHex,
                   }}
                   className={`${alignClass} ${indentClass}`}
                 >
                   <RenderRichTokens
                     text={block.text}
                     defaultColor={block.color ?? 'black'}
+                    headingHex={headingHex}
+                    verseHex={verseHex}
+                    bodyHex={bodyHex}
                   />
                 </p>
               );
@@ -447,8 +698,11 @@ export function BookPageSheet({
         >
           {/* Short right-aligned horizontal line matching original Arabic book */}
           <div
-            style={{ width: `${isMobile ? 110 : Math.round(130 * effectiveZoom)}px` }}
-            className="border-t border-[#222222] mb-2"
+            style={{
+              width: `${isMobile ? 110 : Math.round(130 * effectiveZoom)}px`,
+              borderColor: headingHex,
+            }}
+            className="border-t mb-2"
           />
           <div className="space-y-1">
             {page.footnotes.map((fn, fIdx) => (
@@ -457,10 +711,17 @@ export function BookPageSheet({
                 style={{
                   fontSize: `${isMobile ? 12.5 : Math.round(11.5 * effectiveZoom)}px`,
                   lineHeight: 1.65,
+                  color: bodyHex,
                 }}
-                className="text-justify text-[#222222]"
+                className="text-justify"
               >
-                <RenderRichTokens text={fn} defaultColor="black" />
+                <RenderRichTokens
+                  text={fn}
+                  defaultColor="black"
+                  headingHex={headingHex}
+                  verseHex={verseHex}
+                  bodyHex={bodyHex}
+                />
               </p>
             ))}
           </div>
@@ -469,3 +730,4 @@ export function BookPageSheet({
     </div>
   );
 }
+

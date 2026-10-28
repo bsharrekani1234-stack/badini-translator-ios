@@ -11,7 +11,7 @@ import {
 import './globals.css';
 
 const vazirmatn = Vazirmatn({
-  weight: ['400', '500', '600', '700', '800'],
+  weight: ['400', '500', '600', '700'],
   subsets: ['arabic'],
   variable: '--font-vazirmatn',
   display: 'swap',
@@ -53,16 +53,17 @@ const cairo = Cairo({
 });
 
 const notoKufi = Noto_Kufi_Arabic({
-  weight: ['400', '600', '700'],
+  weight: ['500', '600', '700', '800'],
   subsets: ['arabic'],
   variable: '--font-noto-kufi',
   display: 'swap',
 });
 
 export const viewport: Viewport = {
-  themeColor: '#9A3412',
+  themeColor: '#EFF3FB',
   width: 'device-width',
   initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export const metadata: Metadata = {
@@ -97,11 +98,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html
       lang="ku"
       dir="rtl"
-      className={`${vazirmatn.variable} ${amiri.variable} ${notoNaskh.variable} ${scheherazade.variable} ${lateef.variable} ${cairo.variable} ${notoKufi.variable}`}
+      className={`${notoKufi.variable} ${vazirmatn.variable} ${amiri.variable} ${notoNaskh.variable} ${scheherazade.variable} ${lateef.variable} ${cairo.variable}`}
     >
       <body
         suppressHydrationWarning
-        className="bg-[#F7F4EE] text-[#1C1917] antialiased selection:bg-[#9A3412]/15 selection:text-[#9A3412]"
+        className="bg-[#EFF3FB] text-[#14171F] antialiased selection:bg-[#2563EB]/15 selection:text-[#2563EB]"
       >
         {children}
       </body>

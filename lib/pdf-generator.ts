@@ -1,8 +1,11 @@
 import { jsPDF } from 'jspdf';
 import {
   BOOK_HEADER_TITLE,
+  BookDesignConfig,
   BookPageData,
+  DEFAULT_BOOK_DESIGN,
   parseRichText,
+  resolveEffectiveColors,
   RichTextToken,
   toEasternArabicNumerals,
 } from './book-types';
@@ -14,6 +17,7 @@ export const PDF_HEIGHT_PT = 842;
 interface WordToken {
   text: string;
   color: 'black' | 'red';
+  role?: 'body' | 'heading' | 'verse' | 'highlight';
   bold?: boolean;
   width: number;
 }
@@ -30,12 +34,18 @@ export function renderBookPageToCanvas(
     fontSizePt?: number;
     fontFamily?: string;
     headerTitle?: string;
+    design?: BookDesignConfig;
   }
 ) {
   const scale = options?.scale ?? 2;
   const baseFontSize = options?.fontSizePt ?? 15.5;
   const fontFamily = options?.fontFamily ?? '"Amiri", "Noto Naskh Arabic", serif';
   const headerTitle = options?.headerTitle || BOOK_HEADER_TITLE;
+  const design = options?.design || DEFAULT_BOOK_DESIGN;
+
+  const { headingHex, verseHex, bodyHex, paperHex, frameHex } = resolveEffectiveColors(design);
+  const hasCoverBlock = page.blocks.some((b) => b.type === 'cover');
+  const coverCfg = design.cover || DEFAULT_BOOK_DESIGN.cover;
 
   canvas.width = PDF_WIDTH_PT * scale;
   canvas.height = PDF_HEIGHT_PT * scale;
@@ -46,16 +56,53 @@ export function renderBookPageToCanvas(
   ctx.save();
   ctx.scale(scale, scale);
 
-  // Pure white A4 page background matching original PDF
-  ctx.fillStyle = '#FFFFFF';
+  // Page background (cover bgColor on cover page, paperHex on interior pages)
+  ctx.fillStyle = hasCoverBlock ? coverCfg.bgColor || paperHex || '#FFFFFF' : paperHex || '#FFFFFF';
   ctx.fillRect(0, 0, PDF_WIDTH_PT, PDF_HEIGHT_PT);
 
   // Set RTL direction for proper Arabic/Kurdish shaping
   ctx.direction = 'rtl';
   ctx.textBaseline = 'alphabetic';
 
-  const RED = '#CC0000';
-  const BLACK = '#111111';
+  const HEADING_COLOR = headingHex;
+  const VERSE_COLOR = verseHex;
+  const BODY_COLOR = bodyHex;
+
+  // Draw decorative interior page frame or cover frame if configured
+  const frameStyle = design.frameStyle || 'classic-scholarly';
+  if (hasCoverBlock) {
+    const cAccent = coverCfg.accentColor || HEADING_COLOR;
+    ctx.strokeStyle = cAccent;
+    ctx.lineWidth = 2.2;
+    ctx.strokeRect(24, 24, PDF_WIDTH_PT - 48, PDF_HEIGHT_PT - 48);
+    ctx.lineWidth = 0.9;
+    ctx.strokeRect(32, 32, PDF_WIDTH_PT - 64, PDF_HEIGHT_PT - 64);
+
+    if (coverCfg.style === 'modern-band') {
+      ctx.fillStyle = cAccent;
+      ctx.fillRect(0, 0, PDF_WIDTH_PT, 18);
+    }
+    if (coverCfg.style === 'royal-frame' || coverCfg.style === 'islamic-arch') {
+      ctx.fillStyle = cAccent;
+      ctx.font = `bold 14px ${fontFamily}`;
+      ctx.textAlign = 'center';
+      ctx.fillText('✦   ❖   ۞   ❖   ✦', PDF_WIDTH_PT / 2, 54);
+      ctx.fillText('✦   ❖   ۞   ❖   ✦', PDF_WIDTH_PT / 2, PDF_HEIGHT_PT - 42);
+    }
+  } else if (frameStyle !== 'modern-clean') {
+    ctx.strokeStyle = frameHex || '#E5DEC9';
+    ctx.lineWidth =
+      frameStyle === 'royal-manuscript' || frameStyle === 'ottoman-diwan' ? 1.8 : 1.0;
+    ctx.strokeRect(22, 22, PDF_WIDTH_PT - 44, PDF_HEIGHT_PT - 44);
+    if (
+      frameStyle === 'royal-manuscript' ||
+      frameStyle === 'islamic-mihrab' ||
+      frameStyle === 'ottoman-diwan'
+    ) {
+      ctx.lineWidth = 0.7;
+      ctx.strokeRect(28, 28, PDF_WIDTH_PT - 56, PDF_HEIGHT_PT - 56);
+    }
+  }
 
   // Original book margins: centered text block on A4 sheet
   const marginX = 112;
@@ -74,7 +121,7 @@ export function renderBookPageToCanvas(
     const isOdd = page.pageNumber % 2 === 1;
 
     ctx.font = `bold 12px ${fontFamily}`;
-    ctx.fillStyle = RED;
+    ctx.fillStyle = HEADING_COLOR;
 
     if (isOdd) {
       // Odd page: Title on right, Page number on left
@@ -90,9 +137,9 @@ export function renderBookPageToCanvas(
       ctx.fillText(headerTitle, leftEdge, cursorY);
     }
 
-    // Red horizontal rule below header
+    // Horizontal rule below header
     const lineY = cursorY + 7;
-    ctx.strokeStyle = RED;
+    ctx.strokeStyle = HEADING_COLOR;
     ctx.lineWidth = 1.3;
     ctx.beginPath();
     ctx.moveTo(leftEdge, lineY);
@@ -103,7 +150,8 @@ export function renderBookPageToCanvas(
   }
 
   // Reserve space at bottom for footnotes if present
-  const footnoteHeight = page.footnotes && page.footnotes.length > 0 ? page.footnotes.length * 36 + 24 : 0;
+  const footnoteHeight =
+    page.footnotes && page.footnotes.length > 0 ? page.footnotes.length * 36 + 24 : 0;
   const maxBodyY = PDF_HEIGHT_PT - marginBottom - footnoteHeight;
 
   const widthCache = new Map<string, number>();
@@ -118,7 +166,12 @@ export function renderBookPageToCanvas(
   };
 
   // Helper to wrap rich text tokens into lines
-  const wrapRichTokens = (tokens: RichTextToken[], maxWidth: number, fontSize: number, forceBold = false): WordToken[][] => {
+  const wrapRichTokens = (
+    tokens: RichTextToken[],
+    maxWidth: number,
+    fontSize: number,
+    forceBold = false
+  ): WordToken[][] => {
     const words: WordToken[] = [];
     for (const token of tokens) {
       const parts = token.text.split(/(\s+)/);
@@ -129,6 +182,7 @@ export function renderBookPageToCanvas(
         words.push({
           text: part,
           color: token.color,
+          role: token.role,
           bold: isBold,
           width: measureWordWidth(fontSpec, part),
         });
@@ -144,7 +198,6 @@ export function renderBookPageToCanvas(
         continue;
       }
       if (currentWidth + w.width > maxWidth && currentLine.length > 0) {
-        // Trim trailing whitespace token
         while (currentLine.length > 0 && /^\s+$/.test(currentLine[currentLine.length - 1].text)) {
           currentLine.pop();
         }
@@ -165,6 +218,15 @@ export function renderBookPageToCanvas(
     return lines;
   };
 
+  const resolveWordTokenColor = (w: WordToken, isHeading = false): string => {
+    if (isHeading) {
+      return w.role === 'verse' && w.text.startsWith('﴿') ? VERSE_COLOR : HEADING_COLOR;
+    }
+    if (w.role === 'heading') return HEADING_COLOR;
+    if (w.color === 'red' || w.role === 'verse') return VERSE_COLOR;
+    return BODY_COLOR;
+  };
+
   // Render blocks
   for (const block of page.blocks) {
     if (block.type === 'blank') {
@@ -172,52 +234,109 @@ export function renderBookPageToCanvas(
     }
 
     if (block.type === 'cover') {
-      let y = 265;
-      ctx.textAlign = 'center';
-      ctx.fillStyle = BLACK;
-      ctx.font = `bold 24px ${fontFamily}`;
-      ctx.fillText(block.kicker, centerX, y);
-      y += 54;
+      const cTitleColor = coverCfg.titleColor || HEADING_COLOR;
+      const cTextColor = coverCfg.textColor || BODY_COLOR;
+      const cAccentColor = coverCfg.accentColor || VERSE_COLOR;
 
-      ctx.fillStyle = RED;
-      ctx.font = `bold 30px ${fontFamily}`;
-      for (const line of block.titleLines) {
-        ctx.fillText(line, centerX, y);
-        y += 56;
+      const displayKicker =
+        coverCfg.kicker !== undefined && coverCfg.kicker.trim() !== ''
+          ? coverCfg.kicker
+          : block.kicker;
+      const displayTitleLines =
+        coverCfg.title !== undefined && coverCfg.title.trim() !== ''
+          ? coverCfg.title.split('\n')
+          : block.titleLines;
+      const displaySubtitle = coverCfg.subtitle?.trim() || '';
+      const displayAuthorLabel =
+        coverCfg.authorLabel !== undefined && coverCfg.authorLabel.trim() !== ''
+          ? coverCfg.authorLabel
+          : block.compilerLabel;
+      const displayAuthorName =
+        coverCfg.authorName !== undefined && coverCfg.authorName.trim() !== ''
+          ? coverCfg.authorName
+          : block.compilerName;
+      const displayVerse =
+        coverCfg.footerVerse !== undefined && coverCfg.footerVerse.trim() !== ''
+          ? coverCfg.footerVerse
+          : block.verse;
+      const displayVerseRef =
+        coverCfg.footerRef !== undefined && coverCfg.footerRef.trim() !== ''
+          ? coverCfg.footerRef
+          : block.verseRef;
+
+      let y = 240;
+      ctx.textAlign = 'center';
+      if (displayKicker) {
+        ctx.fillStyle = cTextColor;
+        ctx.font = `bold 23px ${fontFamily}`;
+        ctx.fillText(displayKicker, centerX, y);
+        y += 52;
       }
 
-      if (block.compilerLabel && block.compilerName) {
-        y += 14;
-        ctx.fillStyle = BLACK;
-        ctx.font = `bold 16px ${fontFamily}`;
-        ctx.fillText(block.compilerLabel, centerX, y);
-        y += 26;
-        ctx.fillText(block.compilerName, centerX, y);
+      // Draw ornamental title box
+      const boxTop = y - 34;
+      const boxHeight =
+        displayTitleLines.length * 54 + (displaySubtitle ? 42 : 0) + 24;
+      ctx.strokeStyle = cAccentColor;
+      ctx.lineWidth = 1.6;
+      ctx.strokeRect(leftEdge - 14, boxTop, contentWidth + 28, boxHeight);
+
+      ctx.fillStyle = cTitleColor;
+      ctx.font = `bold 30px ${fontFamily}`;
+      for (const line of displayTitleLines) {
+        ctx.fillText(line, centerX, y);
+        y += 54;
+      }
+
+      if (displaySubtitle) {
+        ctx.fillStyle = cAccentColor;
+        ctx.font = `bold 17px ${fontFamily}`;
+        ctx.fillText(displaySubtitle, centerX, y - 8);
+        y += 34;
+      }
+
+      if (displayAuthorLabel || displayAuthorName) {
+        y += 22;
+        if (displayAuthorLabel) {
+          ctx.fillStyle = cAccentColor;
+          ctx.font = `bold 16px ${fontFamily}`;
+          ctx.fillText(displayAuthorLabel, centerX, y);
+          y += 28;
+        }
+        if (displayAuthorName) {
+          ctx.fillStyle = cTextColor;
+          ctx.font = `bold 18px ${fontFamily}`;
+          ctx.fillText(displayAuthorName, centerX, y);
+        }
       }
 
       // Bottom verse
       const verseY = 640;
-      ctx.fillStyle = RED;
-      ctx.font = `bold 15px ${fontFamily}`;
-      const verseTokens = parseRichText(block.verse, 'red');
-      const verseLines = wrapRichTokens(verseTokens, contentWidth, 15, true);
-      let vy = verseY;
-      for (const vl of verseLines) {
-        const lineStr = vl.map((t) => t.text).join('');
-        ctx.fillText(lineStr, centerX, vy);
-        vy += 26;
+      if (displayVerse) {
+        ctx.fillStyle = cAccentColor;
+        ctx.font = `bold 15px ${fontFamily}`;
+        const verseTokens = parseRichText(displayVerse, 'red');
+        const verseLines = wrapRichTokens(verseTokens, contentWidth, 15, true);
+        let vy = verseY;
+        for (const vl of verseLines) {
+          const lineStr = vl.map((t) => t.text).join('');
+          ctx.fillText(lineStr, centerX, vy);
+          vy += 26;
+        }
+        if (displayVerseRef) {
+          ctx.fillStyle = cTextColor;
+          ctx.font = `15px ${fontFamily}`;
+          ctx.fillText(displayVerseRef, centerX, vy + 6);
+        }
       }
-      ctx.fillStyle = BLACK;
-      ctx.font = `15px ${fontFamily}`;
-      ctx.fillText(block.verseRef, centerX, vy + 6);
       continue;
     }
 
     if (block.type === 'imprint') {
       let y = 320;
       ctx.textAlign = 'center';
-      ctx.fillStyle = BLACK;
       for (const line of block.lines) {
+        ctx.fillStyle = line.bold ? HEADING_COLOR : BODY_COLOR;
         ctx.font = `${line.bold ? 'bold ' : ''}16px ${fontFamily}`;
         ctx.fillText(line.text, centerX, y);
         y += line.gapAfter ? 44 : 26;
@@ -228,12 +347,12 @@ export function renderBookPageToCanvas(
     if (block.type === 'bismillah') {
       let y = 355;
       ctx.textAlign = 'center';
-      ctx.fillStyle = BLACK;
+      ctx.fillStyle = HEADING_COLOR;
       ctx.font = `bold 24px ${fontFamily}`;
       ctx.fillText(block.bismillah, centerX, y);
       y += 48;
 
-      ctx.fillStyle = RED;
+      ctx.fillStyle = VERSE_COLOR;
       ctx.font = `bold 20px ${fontFamily}`;
       for (const sub of block.subLines) {
         ctx.fillText(sub, centerX, y);
@@ -245,7 +364,7 @@ export function renderBookPageToCanvas(
     if (block.type === 'epigraph') {
       let y = 375;
       ctx.textAlign = 'right';
-      ctx.fillStyle = BLACK;
+      ctx.fillStyle = HEADING_COLOR;
       ctx.font = `bold 16px ${fontFamily}`;
       ctx.fillText(block.intro, rightEdge, y);
       y += 34;
@@ -253,23 +372,28 @@ export function renderBookPageToCanvas(
       const tokens = parseRichText(block.verse, 'red');
       const lines = wrapRichTokens(tokens, contentWidth, 16.5, true);
       ctx.textAlign = 'center';
-      ctx.fillStyle = RED;
+      ctx.fillStyle = VERSE_COLOR;
       ctx.font = `bold 16.5px ${fontFamily}`;
       for (const line of lines) {
         ctx.fillText(line.map((w) => w.text).join(''), centerX, y);
         y += 30;
       }
       ctx.textAlign = 'right';
-      ctx.fillStyle = BLACK;
+      ctx.fillStyle = BODY_COLOR;
       ctx.font = `15px ${fontFamily}`;
       ctx.fillText(block.verseRef, rightEdge - 20, y + 4);
       continue;
     }
 
     if (block.type === 'heading') {
-      const hSize = block.size === 'lg' ? baseFontSize + 3.5 : block.size === 'sm' ? baseFontSize - 0.5 : baseFontSize + 1.5;
-      const hColor = block.color === 'black' ? BLACK : RED;
-      const tokens = parseRichText(block.text, hColor === RED ? 'red' : 'black');
+      const hSize =
+        block.size === 'lg'
+          ? baseFontSize + 3.5
+          : block.size === 'sm'
+          ? baseFontSize - 0.5
+          : baseFontSize + 1.5;
+      const hColor = block.color === 'black' ? BODY_COLOR : HEADING_COLOR;
+      const tokens = parseRichText(block.text, block.color === 'black' ? 'black' : 'red');
       const lines = wrapRichTokens(tokens, contentWidth, hSize, true);
 
       cursorY += 4;
@@ -293,7 +417,7 @@ export function renderBookPageToCanvas(
     if (block.type === 'stars') {
       cursorY += 10;
       ctx.textAlign = 'center';
-      ctx.fillStyle = RED;
+      ctx.fillStyle = VERSE_COLOR;
       ctx.font = `bold 18px ${fontFamily}`;
       ctx.fillText('*   *   *', centerX, cursorY);
       cursorY += 24;
@@ -305,12 +429,10 @@ export function renderBookPageToCanvas(
       const lineHeight = pSize * 1.65;
       for (const couplet of block.couplets) {
         ctx.font = `${pSize}px ${fontFamily}`;
-        ctx.fillStyle = BLACK;
-        // Right hemistich
+        ctx.fillStyle = BODY_COLOR;
         ctx.textAlign = 'right';
         ctx.fillText(couplet.right, rightEdge, cursorY);
         cursorY += lineHeight * 0.92;
-        // Left hemistich
         ctx.textAlign = 'left';
         ctx.fillText(couplet.left, leftEdge, cursorY);
         cursorY += lineHeight * 1.08;
@@ -321,13 +443,13 @@ export function renderBookPageToCanvas(
     if (block.type === 'toc') {
       if (block.heading) {
         ctx.textAlign = 'center';
-        ctx.fillStyle = RED;
+        ctx.fillStyle = HEADING_COLOR;
         ctx.font = `bold 20px ${fontFamily}`;
         ctx.fillText(block.heading, centerX, cursorY);
         cursorY += 32;
       }
       if (block.colRightLabel && block.colLeftLabel) {
-        ctx.fillStyle = RED;
+        ctx.fillStyle = VERSE_COLOR;
         ctx.font = `bold 15px ${fontFamily}`;
         ctx.textAlign = 'right';
         ctx.fillText(block.colRightLabel, rightEdge, cursorY);
@@ -338,7 +460,7 @@ export function renderBookPageToCanvas(
 
       const rowFontSize = 14.5;
       ctx.font = `${rowFontSize}px ${fontFamily}`;
-      ctx.fillStyle = BLACK;
+      ctx.fillStyle = BODY_COLOR;
 
       for (const item of block.items) {
         const tokens = parseRichText(item.title, 'black');
@@ -346,13 +468,13 @@ export function renderBookPageToCanvas(
         for (let i = 0; i < lines.length; i++) {
           const lineStr = lines[i].map((w) => w.text).join('');
           ctx.textAlign = 'right';
-          ctx.fillStyle = BLACK;
+          ctx.fillStyle = BODY_COLOR;
           ctx.font = `${rowFontSize}px ${fontFamily}`;
           ctx.fillText(lineStr, rightEdge, cursorY);
 
           if (i === lines.length - 1) {
-            // Draw page number on the left and dotted leader
             ctx.textAlign = 'left';
+            ctx.fillStyle = HEADING_COLOR;
             ctx.fillText(item.page, leftEdge, cursorY);
 
             const textW = ctx.measureText(lineStr).width;
@@ -381,7 +503,6 @@ export function renderBookPageToCanvas(
       const align = block.align ?? 'justify';
       const indent = align === 'justify' && block.indent !== false ? 18 : 0;
 
-      // Wrap first line with indent, subsequent lines with full contentWidth
       const allWords: WordToken[] = [];
       for (const token of tokens) {
         const parts = token.text.split(/(\s+)/);
@@ -391,6 +512,7 @@ export function renderBookPageToCanvas(
           allWords.push({
             text: part,
             color: token.color,
+            role: token.role,
             bold: token.bold,
             width: measureWordWidth(fontSpec, part),
           });
@@ -429,7 +551,7 @@ export function renderBookPageToCanvas(
       }
 
       for (let li = 0; li < lines.length; li++) {
-        if (cursorY > maxBodyY + 18) break; // safety guard
+        if (cursorY > maxBodyY + 18) break;
         const { words: lineWords, isFirst } = lines[li];
         const isLastLine = li === lines.length - 1;
         const lineRightStart = isFirst ? rightEdge - indent : rightEdge;
@@ -439,21 +561,19 @@ export function renderBookPageToCanvas(
           const fullStr = lineWords.map((w) => w.text).join('');
           const hasRed = lineWords.some((w) => w.color === 'red');
           ctx.textAlign = 'center';
-          ctx.fillStyle = hasRed ? RED : BLACK;
+          ctx.fillStyle = hasRed ? VERSE_COLOR : BODY_COLOR;
           ctx.font = `${hasRed ? 'bold ' : ''}${pSize}px ${fontFamily}`;
           ctx.fillText(fullStr, centerX, cursorY);
         } else if (align === 'right' || isLastLine || lineWords.length <= 2) {
-          // Right-aligned token-by-token rendering
           let x = lineRightStart;
           ctx.textAlign = 'right';
           for (const w of lineWords) {
             ctx.font = `${w.bold ? 'bold ' : ''}${pSize}px ${fontFamily}`;
-            ctx.fillStyle = w.color === 'red' ? RED : BLACK;
+            ctx.fillStyle = resolveWordTokenColor(w, false);
             ctx.fillText(w.text, x, cursorY);
             x -= w.width;
           }
         } else {
-          // Full RTL Justification! Distribute extra space across whitespace tokens
           const nonSpaceWidth = lineWords
             .filter((w) => !/^\s+$/.test(w.text))
             .reduce((acc, w) => acc + w.width, 0);
@@ -468,7 +588,7 @@ export function renderBookPageToCanvas(
               x -= extraSpacePerGap;
             } else {
               ctx.font = `${w.bold ? 'bold ' : ''}${pSize}px ${fontFamily}`;
-              ctx.fillStyle = w.color === 'red' ? RED : BLACK;
+              ctx.fillStyle = resolveWordTokenColor(w, false);
               ctx.fillText(w.text, x, cursorY);
               x -= w.width;
             }
@@ -499,8 +619,7 @@ export function renderBookPageToCanvas(
       fnY = cursorY + 12;
     }
 
-    // Short horizontal footnote divider line on the right (matching original book)
-    ctx.strokeStyle = '#333333';
+    ctx.strokeStyle = HEADING_COLOR;
     ctx.lineWidth = 0.9;
     ctx.beginPath();
     ctx.moveTo(rightEdge, fnY - 14);
@@ -513,7 +632,7 @@ export function renderBookPageToCanvas(
         ctx.textAlign = 'right';
         for (const w of lineWords) {
           ctx.font = `${w.bold ? 'bold ' : ''}${fnFontSize}px ${fontFamily}`;
-          ctx.fillStyle = w.color === 'red' ? RED : '#222222';
+          ctx.fillStyle = resolveWordTokenColor(w, false);
           ctx.fillText(w.text, x, fnY);
           x -= w.width;
         }
@@ -527,8 +646,9 @@ export function renderBookPageToCanvas(
 }
 
 /**
- * Generates and downloads a complete multi-page PDF matching the exact [595 x 842] pt
- * page dimensions and typography of the original book.
+ * Generates a complete multi-page PDF matching the exact [595 x 842] pt
+ * page dimensions and typography of the book, returning the PDF Blob
+ * so it can be saved on both desktop and mobile (via the Ready-to-Save Center).
  */
 export async function generateAndDownloadBookPdf(
   pages: BookPageData[],
@@ -538,19 +658,22 @@ export async function generateAndDownloadBookPdf(
     fontFamily?: string;
     scale?: number;
     headerTitle?: string;
+    design?: BookDesignConfig;
+    skipAutoSave?: boolean;
     onProgress?: (current: number, total: number) => void;
   } = {}
-): Promise<void> {
+): Promise<{ blob: Blob; filename: string }> {
   const {
     filename = 'پەرتووکا-فیتنەیا-وێنەگرتنا-زانایان-بادینی.pdf',
     fontSizePt = 15.5,
     fontFamily,
     scale = 2,
     headerTitle = BOOK_HEADER_TITLE,
+    design = DEFAULT_BOOK_DESIGN,
+    skipAutoSave = false,
     onProgress,
   } = options;
 
-  // Ensure web fonts are loaded before rendering onto canvas
   if (typeof document !== 'undefined' && 'fonts' in document) {
     try {
       await document.fonts.ready;
@@ -579,6 +702,7 @@ export async function generateAndDownloadBookPdf(
       fontSizePt,
       fontFamily,
       headerTitle,
+      design,
     });
 
     const imgData = offscreenCanvas.toDataURL('image/jpeg', 0.92);
@@ -588,11 +712,22 @@ export async function generateAndDownloadBookPdf(
       onProgress(i + 1, pages.length);
     }
 
-    // Yield to UI thread every 4 pages so progress bar updates smoothly
     if (i % 4 === 0) {
       await new Promise((r) => setTimeout(r, 0));
     }
   }
 
-  pdf.save(filename);
+  const safeFilename = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
+  const pdfBlob = pdf.output('blob');
+
+  if (!skipAutoSave) {
+    try {
+      pdf.save(safeFilename);
+    } catch {
+      // Mobile browsers / webviews will use the Ready-to-Save box
+    }
+  }
+
+  return { blob: pdfBlob, filename: safeFilename };
 }
+
