@@ -134,6 +134,7 @@ async function translateSubPdfBatch(
 
   const response = await generateContentResilient(
     {
+      fastMode: true,
       contents: {
         parts: [
           {

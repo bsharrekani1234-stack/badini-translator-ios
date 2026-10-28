@@ -106,6 +106,7 @@ export function BookPageSheet({
 
   const effectiveBgColor = hasCoverBlock ? coverCfg.bgColor || paperHex : paperHex;
   const frameStyle = design?.frameStyle || 'classic-scholarly';
+  const effectiveHeaderTitle = design?.customHeaderTitle?.trim() || headerTitle;
 
   return (
     <div
@@ -224,46 +225,161 @@ export function BookPageSheet({
 
       {/* Main upper content container */}
       <div className="flex-1 flex flex-col relative z-0">
-        {/* Running Header when page.showHeader is true */}
-        {page.showHeader && page.pageNumber >= 2 && (
+        {/* Running Header when page.showHeader is true and headerStyle !== 'none' */}
+        {page.showHeader && page.pageNumber >= 2 && design?.headerStyle !== 'none' && (
           <div
             style={{
-              marginBottom: `${isMobile ? 16 : Math.round(18 * effectiveZoom)}px`,
-              borderColor: headingHex,
-              color: headingHex,
+              marginBottom: `${isMobile ? 18 : Math.round(20 * effectiveZoom)}px`,
             }}
-            className="border-b-[1.5px] pb-2 flex items-center justify-between gap-3 font-bold"
           >
-            {isOdd ? (
-              <>
-                <span
-                  style={{ fontSize: `${isMobile ? 12.5 : Math.round(12 * effectiveZoom)}px` }}
-                  className="tracking-normal line-clamp-1"
+            {design?.headerStyle === 'chamfered-boxes' ? (
+              /* Exact match to Image 2: Two side-by-side chamfered/notched corner boxes (wide title box + small page number box) */
+              <div
+                dir="ltr"
+                className="flex items-stretch gap-2.5 w-full select-none"
+                style={{ color: headingHex }}
+              >
+                {/* Small Chamfered Box for Page Number (on left in LTR, matching Image 2) */}
+                <div className="relative w-13 sm:w-15 h-8 sm:h-9 flex items-center justify-center shrink-0">
+                  <svg
+                    viewBox="0 0 100 60"
+                    preserveAspectRatio="none"
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                  >
+                    <polygon
+                      points="10,2 90,2 98,10 98,50 90,58 10,58 2,50 2,10"
+                      fill="none"
+                      stroke={headingHex}
+                      strokeWidth="3.2"
+                    />
+                  </svg>
+                  <span
+                    style={{ fontSize: `${isMobile ? 13.5 : Math.round(13.5 * effectiveZoom)}px` }}
+                    className="relative z-10 font-bold tabular-nums leading-none"
+                  >
+                    {pageNumEastern}
+                  </span>
+                </div>
+
+                {/* Wide Chamfered Box for Header Title (on right in LTR, text right-aligned in RTL, matching Image 2) */}
+                <div
+                  dir="rtl"
+                  className="relative flex-1 h-8 sm:h-9 px-4 flex items-center justify-start overflow-hidden"
                 >
-                  {headerTitle}
-                </span>
-                <span
-                  style={{ fontSize: `${isMobile ? 13 : Math.round(12.5 * effectiveZoom)}px` }}
-                  className="shrink-0 tabular-nums"
+                  <svg
+                    viewBox="0 0 400 60"
+                    preserveAspectRatio="none"
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                  >
+                    <polygon
+                      points="8,2 392,2 398,10 398,50 392,58 8,58 2,50 2,10"
+                      fill="none"
+                      stroke={headingHex}
+                      strokeWidth="2.8"
+                    />
+                  </svg>
+                  <span
+                    style={{ fontSize: `${isMobile ? 12 : Math.round(12.5 * effectiveZoom)}px` }}
+                    className="relative z-10 font-bold tracking-normal truncate w-full text-right"
+                  >
+                    {effectiveHeaderTitle}
+                  </span>
+                </div>
+              </div>
+            ) : design?.headerStyle === 'pill-boxes' ? (
+              /* Modern Pill Boxes Header */
+              <div
+                dir="ltr"
+                className="flex items-center gap-2.5 w-full"
+                style={{ color: headingHex }}
+              >
+                <div
+                  style={{ borderColor: headingHex }}
+                  className="w-12 h-8 rounded-full border-[1.5px] flex items-center justify-center font-bold tabular-nums text-xs shrink-0"
                 >
                   {pageNumEastern}
+                </div>
+                <div
+                  dir="rtl"
+                  style={{ borderColor: headingHex }}
+                  className="flex-1 h-8 px-4 rounded-full border-[1.5px] flex items-center justify-start overflow-hidden"
+                >
+                  <span
+                    style={{ fontSize: `${isMobile ? 12 : Math.round(12 * effectiveZoom)}px` }}
+                    className="font-bold truncate w-full text-right"
+                  >
+                    {effectiveHeaderTitle}
+                  </span>
+                </div>
+              </div>
+            ) : design?.headerStyle === 'ornate-banner' ? (
+              /* Ornate Islamic Banner Header */
+              <div
+                style={{
+                  borderColor: headingHex,
+                  color: headingHex,
+                  backgroundColor: 'rgba(0,0,0,0.02)',
+                }}
+                className="border-y-2 px-3 py-1.5 flex items-center justify-between gap-3 font-bold rounded-sm"
+              >
+                <span
+                  style={{ fontSize: `${isMobile ? 12 : Math.round(12 * effectiveZoom)}px` }}
+                  className="truncate"
+                >
+                  ❖ {effectiveHeaderTitle}
                 </span>
-              </>
+                <span
+                  style={{ fontSize: `${isMobile ? 12.5 : Math.round(12.5 * effectiveZoom)}px` }}
+                  className="shrink-0 tabular-nums"
+                >
+                  ﴿ {pageNumEastern} ﴾
+                </span>
+              </div>
             ) : (
-              <>
-                <span
-                  style={{ fontSize: `${isMobile ? 13 : Math.round(12.5 * effectiveZoom)}px` }}
-                  className="shrink-0 tabular-nums"
-                >
-                  {pageNumEastern}
-                </span>
-                <span
-                  style={{ fontSize: `${isMobile ? 12.5 : Math.round(12 * effectiveZoom)}px` }}
-                  className="tracking-normal line-clamp-1"
-                >
-                  {headerTitle}
-                </span>
-              </>
+              /* Default Classic Scholarly Line or Double-Rule Header */
+              <div
+                style={{
+                  borderColor: headingHex,
+                  color: headingHex,
+                }}
+                className={`${
+                  design?.headerStyle === 'double-rule'
+                    ? 'border-b-4 border-double pb-2'
+                    : 'border-b-[1.5px] pb-2'
+                } flex items-center justify-between gap-3 font-bold`}
+              >
+                {isOdd ? (
+                  <>
+                    <span
+                      style={{ fontSize: `${isMobile ? 12.5 : Math.round(12 * effectiveZoom)}px` }}
+                      className="tracking-normal line-clamp-1"
+                    >
+                      {effectiveHeaderTitle}
+                    </span>
+                    <span
+                      style={{ fontSize: `${isMobile ? 13 : Math.round(12.5 * effectiveZoom)}px` }}
+                      className="shrink-0 tabular-nums"
+                    >
+                      {pageNumEastern}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      style={{ fontSize: `${isMobile ? 13 : Math.round(12.5 * effectiveZoom)}px` }}
+                      className="shrink-0 tabular-nums"
+                    >
+                      {pageNumEastern}
+                    </span>
+                    <span
+                      style={{ fontSize: `${isMobile ? 12.5 : Math.round(12 * effectiveZoom)}px` }}
+                      className="tracking-normal line-clamp-1"
+                    >
+                      {effectiveHeaderTitle}
+                    </span>
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}

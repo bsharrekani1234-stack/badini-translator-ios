@@ -18,45 +18,63 @@
 
   html,
   body {
-    font-family: var(--font-vazirmatn), var(--font-noto-kufi), sans-serif;
+    /* Default base uses the Soft Classic Font (فۆنتێ کلاسیکێ نەرم: Noto Naskh Arabic + Amiri) with generous line spacing */
+    font-family: var(--font-noto-naskh), var(--font-amiri), serif;
     letter-spacing: 0px !important;
-    word-spacing: 0.025em;
-    line-height: 1.72;
+    word-spacing: 0.03em;
+    line-height: 2.0 !important;
     font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
     text-rendering: optimizeLegibility;
   }
 
-  /* Main headings, top lines, titles, and bold UI labels use the Font from Image 2 (Noto Kufi Arabic) */
+  /* Font 1: Main headings, top lines, titles, and primary action buttons use Noto Kufi Arabic with generous 2-line spacing */
   h1,
   h2,
   h3,
   h4,
   h5,
   h6,
-  .font-heading,
-  .font-extrabold,
-  .font-bold {
-    font-family: var(--font-noto-kufi), var(--font-vazirmatn), sans-serif;
+  .font-heading {
+    font-family: var(--font-noto-kufi), var(--font-noto-naskh), sans-serif;
     letter-spacing: 0px !important;
     word-spacing: 0.03em;
-    line-height: 1.62;
+    line-height: 1.95 !important;
   }
 
-  /* Subtext, descriptions, inputs, selects, options, and secondary lines use Vazirmatn (100% Kurdish support) */
+  /* Font 2: Subtext, descriptions, multi-line body text, chat messages, inputs, selects, and options use the Soft Classic Font (فۆنتێ کلاسیکێ نەرم) */
   p,
   input,
   select,
   option,
   textarea,
-  .font-subtext {
-    font-family: var(--font-vazirmatn), var(--font-noto-kufi), sans-serif;
+  .font-subtext,
+  .font-classic-soft {
+    font-family: var(--font-noto-naskh), var(--font-amiri), serif;
     letter-spacing: 0px !important;
+    word-spacing: 0.03em;
+    line-height: 2.05 !important;
   }
 
   button {
-    font-family: var(--font-noto-kufi), var(--font-vazirmatn), sans-serif;
+    font-family: var(--font-noto-kufi), var(--font-noto-naskh), sans-serif;
     letter-spacing: 0px !important;
+    line-height: 1.8 !important;
   }
+}
+
+/* Ensure Tailwind text-* utilities never collapse line-height when Kurdish/Arabic text wraps into 2+ lines */
+[dir="rtl"] h1,
+[dir="rtl"] h2,
+[dir="rtl"] h3,
+[dir="rtl"] h4,
+[dir="rtl"] .font-heading {
+  line-height: 1.95 !important;
+}
+
+[dir="rtl"] p,
+[dir="rtl"] .font-subtext,
+[dir="rtl"] .font-classic-soft {
+  line-height: 2.05 !important;
 }
 
 /* Prevent negative letter-spacing from cramping Arabic/Kurdish script */
@@ -66,7 +84,7 @@
 }
 
 .font-ui {
-  font-family: var(--font-noto-kufi), var(--font-vazirmatn), sans-serif;
+  font-family: var(--font-noto-kufi), var(--font-noto-naskh), sans-serif;
   letter-spacing: 0px;
 }
 

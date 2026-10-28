@@ -160,18 +160,21 @@ interface ChatMessage {
   previousPageSnapshot?: BookPageData;
   didUpdateDesign?: boolean;
   previousDesignSnapshot?: BookDesignConfig;
+  previousPagesSnapshot?: BookPageData[];
 }
 
 const DEFAULT_BOOK_ID = 'default-142-book';
 const QAWAID_LESSON1_BOOK_ID = 'qawaid-arba-lesson1-book';
 const SHAKHSIYA_QAWIYA_BOOK_ID = 'shakhsiya-qawiya-book';
 const STORAGE_KEY_BOOKS = 'badini_custom_books_v1';
+const STORAGE_KEY_DELETED_BOOK_IDS = 'badini_deleted_book_ids_v1';
 const STORAGE_KEY_DEFAULT_EDITS = 'badini_default_book_edits_v1';
+const STORAGE_KEY_DEFAULT_FULL_PAGES = 'badini_default_full_pages_v1';
 const STORAGE_KEY_QAWAID_EDITS = 'badini_qawaid_lesson1_edits_v1';
-const STORAGE_KEY_QAWAID_FULL_PAGES = 'badini_qawaid_full_pages_v2';
-const STORAGE_KEY_QAWAID_TRACKS = 'badini_qawaid_tracks_v2';
-const STORAGE_KEY_SHAKHSIYA_FULL_PAGES = 'badini_shakhsiya_full_pages_v1';
-const STORAGE_KEY_SHAKHSIYA_TRACKS = 'badini_shakhsiya_tracks_v1';
+const STORAGE_KEY_QAWAID_FULL_PAGES = 'badini_qawaid_full_pages_v3';
+const STORAGE_KEY_QAWAID_TRACKS = 'badini_qawaid_tracks_v3';
+const STORAGE_KEY_SHAKHSIYA_FULL_PAGES = 'badini_shakhsiya_full_pages_v2';
+const STORAGE_KEY_SHAKHSIYA_TRACKS = 'badini_shakhsiya_tracks_v2';
 const STORAGE_KEY_BOOK_FONT = 'badini_selected_book_font_v1';
 const STORAGE_KEY_BOOK_DESIGNS = 'badini_book_designs_v1';
 
@@ -212,19 +215,20 @@ function formatDurationKurdish(totalSeconds: number): string {
 }
 
 export default function BadiniBookTranslatorPage() {
-  // Built-in Book 1: Default 142-page project (permanently preserved)
+  // Built-in Book 1: Default 142-page project
   const [defaultBookPages, setDefaultBookPages] = useState<BookPageData[]>(ALL_BOOK_PAGES);
 
-  // Built-in Book 2: Verbatim Audio-to-Book of Mela Remezan's Al-Qawa'id Al-Arba' (permanently preserved + expandable)
+  // Built-in Book 2: Verbatim Audio-to-Book of Mela Remezan's Al-Qawa'id Al-Arba'
   const [qawaidBookPages, setQawaidBookPages] = useState<BookPageData[]>(QAWAID_ARBA_LESSON1_PAGES);
   const [qawaidAudioTracks, setQawaidAudioTracks] = useState<AudioLessonTrack[]>(DEFAULT_QAWAID_TRACKS);
 
-  // Built-in Book 3: Verbatim Audio-to-Book of Al-Shakhsiya Al-Qawiya (الشخصية القوية - 16 pages, permanently preserved + expandable)
+  // Built-in Book 3: Verbatim Audio-to-Book of Al-Shakhsiya Al-Qawiya (الشخصية القوية - 16 pages)
   const [shakhsiyaBookPages, setShakhsiyaBookPages] = useState<BookPageData[]>(SHAKHSIYA_QAWIYA_PAGES);
   const [shakhsiyaAudioTracks, setShakhsiyaAudioTracks] = useState<AudioLessonTrack[]>(DEFAULT_SHAKHSIYA_TRACKS);
 
-  // Additional user-uploaded Arabic->Badini or Audio->Book projects
+  // Additional user-uploaded Arabic->Badini or Audio->Book projects + deleted book IDs
   const [customBooks, setCustomBooks] = useState<BookProject[]>([]);
+  const [deletedBookIds, setDeletedBookIds] = useState<string[]>([]);
   const [activeBookId, setActiveBookId] = useState<string>(SHAKHSIYA_QAWIYA_BOOK_ID);
 
   // Per-book custom design configuration (Cover, Interior Layout, 1/2/3-Color Fonts)
@@ -282,15 +286,16 @@ export default function BadiniBookTranslatorPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const abortUploadRef = useRef<boolean>(false);
 
-  // Audio-to-Book ("دەنگ بۆ پەرتووک") state with Multi-Audio Linking & Time Estimation
+  // Audio-to-Book ("دەنگ بۆ پەرتووک") state — Default to 'new' so each new audio file creates its own clean PDF/Word book unless the user explicitly selects 'append'
   const [selectedAudioFiles, setSelectedAudioFiles] = useState<File[]>([]);
-  const [audioTargetMode, setAudioTargetMode] = useState<'append' | 'new'>('append');
-  const [targetAppendBookId, setTargetAppendBookId] = useState<string>(SHAKHSIYA_QAWIYA_BOOK_ID);
+  const [audioTargetMode, setAudioTargetMode] = useState<'append' | 'new'>('new');
+  const [targetAppendBookId, setTargetAppendBookId] = useState<string>(QAWAID_LESSON1_BOOK_ID);
   const [audioBookTitleInput, setAudioBookTitleInput] = useState<string>('');
   const [audioLessonTitleInput, setAudioLessonTitleInput] = useState<string>('وانا دووێ');
-  const [audioSpeakerInput, setAudioSpeakerInput] = useState<string>('مامۆستا');
+  const [audioSpeakerInput, setAudioSpeakerInput] = useState<string>('مامۆستا مەلا رەمەزان');
   const [isConvertingAudio, setIsConvertingAudio] = useState<boolean>(false);
   const [audioElapsedSec, setAudioElapsedSec] = useState<number>(0);
+  const [audioProgressPercent, setAudioProgressPercent] = useState<number>(0);
   const [audioConvertStatus, setAudioConvertStatus] = useState<string | null>(null);
   const [audioConvertError, setAudioConvertError] = useState<string | null>(null);
 
@@ -309,7 +314,7 @@ export default function BadiniBookTranslatorPage() {
     {
       id: 'welcome',
       role: 'assistant',
-      text: 'سلاڤ! ئەز ڕۆبۆتێ تایبەت ب دیزاینکرنا پەرتووکێ، چێکرنا بەرگێ پەرتووکێ (Cover)، و رێکخستنا رەنگێن فۆنتانم (١ رەنگ، ٢ رەنگ، یان ٣ رەنگ). تۆ دشێی ب نڤیسین داخازا خۆ بێژی، یان وێنەیێ هەر پەرتووکەکێ یان بەرگەکی بۆ من بهنێری دا ئەز دیزاینا پەرتووکێ و رەنگان رێک وەکی وی وێنەی بۆ تە چێبکەم!',
+      text: 'سلاڤ! ئەز ڕۆبۆتێ گشتی یێ دیزاینکرن و رێکخستنا پەرتووکێمە. هەر تشتەکێ تە بڤێت بێژە من یان وێنەیەکی (Screenshot) بهنێرە: گوهۆڕینا شێوازێ سەرێ لاپەری، رەنگێن فۆنتان (١، ٢، یان ٣ رەنگ)، چێکرنا بەرگێ پەرتووکێ، یان ژێبرنا هەر لاپەرەکێ تە بڤێت!',
     },
   ]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -317,14 +322,29 @@ export default function BadiniBookTranslatorPage() {
   // Server-side background job tracking
   const [activeServerJobId, setActiveServerJobId] = useState<string | null>(null);
 
-  // Live 1-second timer during Audio-to-Book conversion to show Elapsed & Remaining Time
+  // Live 1-second timer during Audio-to-Book conversion to show Elapsed & Remaining Time and smoothly advance in-flight batch progress
   useEffect(() => {
     if (!isConvertingAudio) {
       setAudioElapsedSec(0);
+      setAudioProgressPercent(0);
       return;
     }
     const timer = setInterval(() => {
-      setAudioElapsedSec((prev) => prev + 1);
+      setAudioElapsedSec((prevSec) => {
+        const nextSec = prevSec + 1;
+        setAudioProgressPercent((prevPct) => {
+          if (prevPct >= 20 && prevPct < 94) {
+            const nextPct = Math.min(94, prevPct + 1);
+            setAudioConvertStatus((prevStatus) => {
+              if (!prevStatus) return prevStatus;
+              return prevStatus.replace(/\([٠-٩0-9]+٪\)/g, `(${toEasternArabicNumerals(nextPct)}٪)`);
+            });
+            return nextPct;
+          }
+          return prevPct;
+        });
+        return nextSec;
+      });
     }, 1000);
     return () => clearInterval(timer);
   }, [isConvertingAudio]);
@@ -346,10 +366,24 @@ export default function BadiniBookTranslatorPage() {
     if (selectedAudioFiles.length === 0) return 0;
     return selectedAudioFiles.reduce((acc, f) => {
       const sizeMb = f.size / (1024 * 1024);
-      const est = Math.max(25, Math.min(110, Math.round(sizeMb * 2.5) + 22));
+      const est = Math.max(18, Math.min(85, Math.round(sizeMb * 1.4) + 16));
       return acc + est;
     }, 0);
   }, [selectedAudioFiles]);
+
+  // Dynamic remaining seconds during active Audio-to-Book conversion, strictly synchronized with audioProgressPercent
+  const remainingAudioSec = useMemo(() => {
+    const pct = Math.max(1, Math.min(99, audioProgressPercent));
+    if (pct >= 100) return 0;
+    const remRatio = (100 - pct) / 100;
+    const baseEstRemaining = Math.max(5, Math.round(estimatedAudioTotalSec * remRatio));
+    if (pct >= 10 && audioElapsedSec >= 3) {
+      const rateRemaining = Math.round(((100 - pct) / pct) * audioElapsedSec);
+      const blended = Math.round(rateRemaining * 0.65 + baseEstRemaining * 0.35);
+      return Math.max(4, Math.min(180, blended));
+    }
+    return Math.max(5, baseEstRemaining);
+  }, [audioProgressPercent, audioElapsedSec, estimatedAudioTotalSec]);
 
   // Estimated total seconds needed for PDF page range before/during translation (~3.5s per page in parallel batches)
   const estimatedPdfTotalSec = useMemo(() => {
@@ -372,11 +406,22 @@ export default function BadiniBookTranslatorPage() {
 
   // Load saved custom books, default edits, book font, book designs, and sync server-side background translation jobs
   useEffect(() => {
+    let loadedDeletedIds: string[] = [];
     try {
+      const savedDeleted = localStorage.getItem(STORAGE_KEY_DELETED_BOOK_IDS);
+      if (savedDeleted) {
+        const parsedDel = JSON.parse(savedDeleted) as string[];
+        if (Array.isArray(parsedDel)) {
+          loadedDeletedIds = parsedDel;
+          setDeletedBookIds(parsedDel);
+        }
+      }
       const savedCustom = localStorage.getItem(STORAGE_KEY_BOOKS);
       if (savedCustom) {
         const parsed = JSON.parse(savedCustom) as BookProject[];
-        if (Array.isArray(parsed)) setCustomBooks(parsed);
+        if (Array.isArray(parsed)) {
+          setCustomBooks(parsed.filter((b) => !loadedDeletedIds.includes(b.id)));
+        }
       }
       const savedBookFont = localStorage.getItem(STORAGE_KEY_BOOK_FONT);
       if (savedBookFont && BOOK_FONT_OPTIONS.some((f) => f.id === savedBookFont)) {
@@ -389,19 +434,27 @@ export default function BadiniBookTranslatorPage() {
           setBookDesignsMap(parsedDesigns);
         }
       }
-      const savedDefaultEdits = localStorage.getItem(STORAGE_KEY_DEFAULT_EDITS);
-      if (savedDefaultEdits) {
-        const parsedMap = JSON.parse(savedDefaultEdits) as Record<number, BookPageData>;
-        if (parsedMap && typeof parsedMap === 'object') {
-          setDefaultBookPages(
-            ALL_BOOK_PAGES.map((p) => (parsedMap[p.pageNumber] ? parsedMap[p.pageNumber] : p))
-          );
+      const savedDefaultFull = localStorage.getItem(STORAGE_KEY_DEFAULT_FULL_PAGES);
+      if (savedDefaultFull) {
+        const parsedDefault = JSON.parse(savedDefaultFull) as BookPageData[];
+        if (Array.isArray(parsedDefault) && parsedDefault.length >= 1) {
+          setDefaultBookPages(parsedDefault);
+        }
+      } else {
+        const savedDefaultEdits = localStorage.getItem(STORAGE_KEY_DEFAULT_EDITS);
+        if (savedDefaultEdits) {
+          const parsedMap = JSON.parse(savedDefaultEdits) as Record<number, BookPageData>;
+          if (parsedMap && typeof parsedMap === 'object') {
+            setDefaultBookPages(
+              ALL_BOOK_PAGES.map((p) => (parsedMap[p.pageNumber] ? parsedMap[p.pageNumber] : p))
+            );
+          }
         }
       }
       const savedQawaidFull = localStorage.getItem(STORAGE_KEY_QAWAID_FULL_PAGES);
       if (savedQawaidFull) {
         const parsedPages = JSON.parse(savedQawaidFull) as BookPageData[];
-        if (Array.isArray(parsedPages) && parsedPages.length >= QAWAID_ARBA_LESSON1_PAGES.length) {
+        if (Array.isArray(parsedPages) && parsedPages.length >= 1) {
           setQawaidBookPages(parsedPages);
         }
       } else {
@@ -427,7 +480,7 @@ export default function BadiniBookTranslatorPage() {
       const savedShakhsiyaFull = localStorage.getItem(STORAGE_KEY_SHAKHSIYA_FULL_PAGES);
       if (savedShakhsiyaFull) {
         const parsedPages = JSON.parse(savedShakhsiyaFull) as BookPageData[];
-        if (Array.isArray(parsedPages) && parsedPages.length >= SHAKHSIYA_QAWIYA_PAGES.length) {
+        if (Array.isArray(parsedPages) && parsedPages.length >= 1) {
           setShakhsiyaBookPages(parsedPages);
         }
       }
@@ -452,12 +505,25 @@ export default function BadiniBookTranslatorPage() {
         const serverJobs = Array.isArray(data.jobs) ? data.jobs : [];
         if (serverJobs.length === 0) return;
 
+        let currentDeletedSet = new Set<string>(loadedDeletedIds);
+        try {
+          const rawDel = localStorage.getItem(STORAGE_KEY_DELETED_BOOK_IDS);
+          if (rawDel) {
+            const parsedDel = JSON.parse(rawDel);
+            if (Array.isArray(parsedDel)) currentDeletedSet = new Set(parsedDel);
+          }
+        } catch {
+          // ignore
+        }
+
         setCustomBooks((prev) => {
           const map = new Map<string, BookProject>();
-          for (const b of prev) map.set(b.id, b);
+          for (const b of prev) {
+            if (!currentDeletedSet.has(b.id)) map.set(b.id, b);
+          }
 
           for (const job of serverJobs) {
-            if (!job || !job.bookId) continue;
+            if (!job || !job.bookId || currentDeletedSet.has(job.bookId)) continue;
             const existing = map.get(job.bookId);
             if (!existing || (Array.isArray(job.pages) && job.pages.length >= existing.pages.length)) {
               map.set(job.bookId, {
@@ -475,7 +541,7 @@ export default function BadiniBookTranslatorPage() {
           return Array.from(map.values());
         });
 
-        const runningJob = serverJobs.find((j: { status?: string }) => j.status === 'running');
+        const runningJob = serverJobs.find((j: { status?: string; bookId?: string }) => j.status === 'running' && (!j.bookId || !currentDeletedSet.has(j.bookId)));
         if (runningJob) {
           setActiveServerJobId(runningJob.id);
           setIsTranslatingUpload(true);
@@ -607,7 +673,7 @@ export default function BadiniBookTranslatorPage() {
     }
   }, [shakhsiyaBookPages, shakhsiyaAudioTracks]);
 
-  // All available books (All 3 built-in books are permanently preserved and cannot be deleted)
+  // All available books (filtered by deletedBookIds so user can delete any book)
   const allBooks = useMemo<BookProject[]>(() => {
     const shakhsiyaTitle =
       shakhsiyaAudioTracks.length > 1
@@ -616,18 +682,25 @@ export default function BadiniBookTranslatorPage() {
           )} وانە پێکڤە)`
         : 'پەرتووکا الشخصية القوية (کەسایەتییا بهێز — وانا ئێکێ)';
 
+    const shakhsiyaHeader =
+      shakhsiyaAudioTracks.length > 1
+        ? `پەرتووکا الشخصية القوية (کەسایەتییا بهێز — ${toEasternArabicNumerals(
+            shakhsiyaAudioTracks.length
+          )} وانە پێکڤە)`
+        : SHAKHSIYA_QAWIYA_HEADER;
+
     const shakhsiyaBook: BookProject = {
       id: SHAKHSIYA_QAWIYA_BOOK_ID,
       title: shakhsiyaTitle,
-      arabicTitle: 'كتاب الشخصية القوية - الدرس الأول',
-      headerTitle: SHAKHSIYA_QAWIYA_HEADER,
+      arabicTitle: 'كتاب الشخصية القوية',
+      headerTitle: shakhsiyaHeader,
       totalPages: shakhsiyaBookPages.length,
       pages: shakhsiyaBookPages,
       isDefault: true,
       isBuiltIn: true,
       audioUrl: SHAKHSIYA_QAWIYA_AUDIO_URL,
       audioTracks: shakhsiyaAudioTracks,
-      createdAt: 'پەرتووکا دەنگی یا رێکخستی (پاراستی)',
+      createdAt: 'پەرتووکا دەنگی یا رێکخستی',
     };
 
     const qawaidTitle =
@@ -637,18 +710,25 @@ export default function BadiniBookTranslatorPage() {
           )} وانە پێکڤە)`
         : 'پەرتووکا القواعد الأربع — شڕۆڤەیا مەلا رەمەزانی (وانا ئێکێ)';
 
+    const qawaidHeader =
+      qawaidAudioTracks.length > 1
+        ? `شڕۆڤەیا پەرتووکا القواعد الأربع - مەلا رەمەزان (${toEasternArabicNumerals(
+            qawaidAudioTracks.length
+          )} وانە پێکڤە)`
+        : QAWAID_ARBA_LESSON1_HEADER;
+
     const qawaidLesson1Book: BookProject = {
       id: QAWAID_LESSON1_BOOK_ID,
       title: qawaidTitle,
       arabicTitle: 'شرح القواعد الأربع - ملا رمضان',
-      headerTitle: QAWAID_ARBA_LESSON1_HEADER,
+      headerTitle: qawaidHeader,
       totalPages: qawaidBookPages.length,
       pages: qawaidBookPages,
       isDefault: true,
       isBuiltIn: true,
       audioUrl: QAWAID_ARBA_LESSON1_AUDIO_URL,
       audioTracks: qawaidAudioTracks,
-      createdAt: 'پەرتووکا دەنگی یا رێکخستی (پاراستی)',
+      createdAt: 'پەرتووکا دەنگی یا رێکخستی',
     };
 
     const builtIn142Book: BookProject = {
@@ -656,16 +736,27 @@ export default function BadiniBookTranslatorPage() {
       title: 'پوختەکرنا پەرتووکا فیتنەیا وێنەگرتنا زانایان و دەرکەفتن د کەناڵێن ئەسمانی دا',
       arabicTitle: 'تهذيب كتاب فتنة تصوير العلماء والظهور في القنوات الفضائية',
       headerTitle: BOOK_HEADER_TITLE,
-      totalPages: 142,
+      totalPages: defaultBookPages.length,
       pages: defaultBookPages,
       isDefault: true,
       isBuiltIn: true,
       originalPdfUrl: '/assets/aistudio/__00_____________________5ac6392c.pdf',
-      createdAt: 'پەرتووکا سەرەکی یا ١٤٢ لاپەر (پاراستی)',
+      createdAt: 'پەرتووکا سەرەکی یا ١٤٢ لاپەر',
     };
 
-    return [shakhsiyaBook, qawaidLesson1Book, builtIn142Book, ...customBooks];
-  }, [shakhsiyaBookPages, shakhsiyaAudioTracks, qawaidBookPages, qawaidAudioTracks, defaultBookPages, customBooks]);
+    const combined = [shakhsiyaBook, qawaidLesson1Book, builtIn142Book, ...customBooks].filter(
+      (b) => !deletedBookIds.includes(b.id)
+    );
+    return combined.length > 0 ? combined : [builtIn142Book];
+  }, [
+    shakhsiyaBookPages,
+    shakhsiyaAudioTracks,
+    qawaidBookPages,
+    qawaidAudioTracks,
+    defaultBookPages,
+    customBooks,
+    deletedBookIds,
+  ]);
 
   // Separate Audio-to-Book projects from Document-Translated books
   const audioBooksList = useMemo<BookProject[]>(
@@ -776,6 +867,38 @@ export default function BadiniBookTranslatorPage() {
             pages: book.pages.map((p) => (p.pageNumber === pageNumber ? updater(p) : p)),
           };
         })
+      );
+    }
+  };
+
+  // Replace the full pages array of the active book (e.g. when deleting pages via AI Bot)
+  const replacePagesInActiveBook = (nextPages: BookPageData[]) => {
+    const renumbered = nextPages.map((p, idx) => ({
+      ...p,
+      pageNumber: idx + 1,
+    }));
+    if (activeBook.id === DEFAULT_BOOK_ID) {
+      setDefaultBookPages(renumbered);
+      try {
+        localStorage.setItem(STORAGE_KEY_DEFAULT_FULL_PAGES, JSON.stringify(renumbered));
+      } catch {
+        // ignore
+      }
+    } else if (activeBook.id === QAWAID_LESSON1_BOOK_ID) {
+      setQawaidBookPages(renumbered);
+    } else if (activeBook.id === SHAKHSIYA_QAWIYA_BOOK_ID) {
+      setShakhsiyaBookPages(renumbered);
+    } else {
+      setCustomBooks((prev) =>
+        prev.map((book) =>
+          book.id === activeBook.id
+            ? {
+                ...book,
+                pages: renumbered,
+                totalPages: renumbered.length,
+              }
+            : book
+        )
       );
     }
   };
@@ -1215,18 +1338,34 @@ export default function BadiniBookTranslatorPage() {
     const filesList = e.target.files ? Array.from(e.target.files) : [];
     if (filesList.length === 0) return;
     setAudioConvertError(null);
+
+    const isFirstInQueue = selectedAudioFiles.length === 0;
     setSelectedAudioFiles((prev) => [...prev, ...filesList]);
 
     const firstFile = filesList[0];
     const cleanName = firstFile.name.replace(/\.[a-z0-9]+$/i, '').replace(/[_-]+/g, ' ');
-    if (!audioBookTitleInput.trim()) {
+    if (isFirstInQueue || !audioBookTitleInput.trim()) {
       setAudioBookTitleInput(cleanName);
     }
 
-    // Automatically suggest next lesson number based on target book's existing tracks
-    const targetBook = allBooks.find((b) => b.id === targetAppendBookId);
-    const existingTracksCount = targetBook?.audioTracks?.length || 1;
-    setAudioLessonTitleInput(getKurdishLessonTitle(existingTracksCount + 1));
+    if (audioTargetMode === 'append') {
+      const targetBook = allBooks.find((b) => b.id === targetAppendBookId);
+      const existingTracksCount = targetBook?.audioTracks?.length || 1;
+      setAudioLessonTitleInput(getKurdishLessonTitle(existingTracksCount + 1));
+    } else {
+      // Smartly detect lesson number from filename if starting a new standalone book
+      if (/(?:^|\D)(2|٢|دوو|ثاني)/i.test(cleanName)) {
+        setAudioLessonTitleInput('وانا دووێ');
+      } else if (/(?:^|\D)(3|٣|سێ|ثالث)/i.test(cleanName)) {
+        setAudioLessonTitleInput('وانا سێیێ');
+      } else if (/(?:^|\D)(4|٤|چار|رابع)/i.test(cleanName)) {
+        setAudioLessonTitleInput('وانا چارێ');
+      } else if (/(?:^|\D)(5|٥|پێنج|خامس)/i.test(cleanName)) {
+        setAudioLessonTitleInput('وانا پێنجێ');
+      } else if (/(?:^|\D)(1|١|ئێک|أول|اول)/i.test(cleanName)) {
+        setAudioLessonTitleInput('وانا ئێکێ');
+      }
+    }
     e.target.value = '';
   };
 
@@ -1288,8 +1427,8 @@ export default function BadiniBookTranslatorPage() {
     return btoa(binary);
   };
 
-  // Upload a File or Uint8Array in compact 350 KB JSON chunks with 5x automatic retry per chunk
-  // so no HTTP request ever exceeds proxy body limits or fails with "Failed to fetch"
+  // Upload a File or Uint8Array in fast 750 KB binary chunks with 8x parallel concurrency
+  // Eliminates 33% Base64 expansion overhead while staying safely below 1MB proxy body limits
   const uploadBufferInChunks = async (
     endpoint: string,
     bytes: Uint8Array,
@@ -1297,12 +1436,12 @@ export default function BadiniBookTranslatorPage() {
     mimeType: string,
     onChunkProgress?: (sentChunks: number, totalChunks: number) => void
   ): Promise<string> => {
-    const CHUNK_SIZE = 350 * 1024; // 350 KB binary (~466 KB base64 JSON, well below all 1MB proxy limits)
+    const CHUNK_SIZE = 750 * 1024; // 750 KB binary per chunk
     const totalChunks = Math.max(1, Math.ceil(bytes.byteLength / CHUNK_SIZE));
     const uploadId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
     let completedChunks = 0;
-    const CONCURRENCY = 3;
+    const CONCURRENCY = 8; // 8 parallel streams (~6 MB per batch round-trip)
 
     for (let startIdx = 0; startIdx < totalChunks; startIdx += CONCURRENCY) {
       const batchIndices: number[] = [];
@@ -1316,24 +1455,46 @@ export default function BadiniBookTranslatorPage() {
             c * CHUNK_SIZE,
             Math.min(bytes.byteLength, (c + 1) * CHUNK_SIZE)
           );
-          const chunkBase64 = uint8SliceToBase64(slice);
 
           let lastChunkErr: unknown = null;
           for (let attempt = 0; attempt < 5; attempt++) {
             try {
-              const res = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  action: 'upload-chunk',
-                  uploadId,
-                  chunkIndex: c,
-                  totalChunks,
-                  fileName,
-                  mimeType,
-                  chunkBase64,
-                }),
-              });
+              let res: Response;
+              if (attempt < 3) {
+                const fd = new FormData();
+                fd.append('action', 'upload-chunk');
+                fd.append('uploadId', uploadId);
+                fd.append('chunkIndex', String(c));
+                fd.append('totalChunks', String(totalChunks));
+                fd.append('fileName', fileName);
+                fd.append('mimeType', mimeType);
+                fd.append(
+                  'chunk',
+                  new Blob([slice.slice().buffer as ArrayBuffer], {
+                    type: mimeType || 'application/octet-stream',
+                  }),
+                  fileName
+                );
+                res = await fetch(endpoint, {
+                  method: 'POST',
+                  body: fd,
+                });
+              } else {
+                const chunkBase64 = uint8SliceToBase64(slice);
+                res = await fetch(endpoint, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    action: 'upload-chunk',
+                    uploadId,
+                    chunkIndex: c,
+                    totalChunks,
+                    fileName,
+                    mimeType,
+                    chunkBase64,
+                  }),
+                });
+              }
               const data = await safeParseJson(res);
               if (!res.ok || data.error) {
                 throw new Error(data.error || 'شاشی د هنارتنا پشکا فایلێ دا چێبوو');
@@ -1342,7 +1503,7 @@ export default function BadiniBookTranslatorPage() {
               break;
             } catch (err) {
               lastChunkErr = err;
-              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+              await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
             }
           }
 
@@ -1361,18 +1522,19 @@ export default function BadiniBookTranslatorPage() {
     return uploadId;
   };
 
-  // Convert one or multiple uploaded audio files verbatim and link them together into a single unified book
+  // Convert one or multiple uploaded audio files verbatim into a standalone book (default) or append to an existing book
   const handleConvertAudioToBook = async () => {
     if (selectedAudioFiles.length === 0 || isConvertingAudio) return;
     setAudioConvertError(null);
-    setAudioConvertStatus(null);
+    setAudioProgressPercent(1);
+    setAudioConvertStatus('ئامادەکرنا دەنگی بۆ هنارتنا بلەز (١٪)...');
     setIsConvertingAudio(true);
 
     try {
       let currentTargetId = targetAppendBookId;
       let currentMode: 'new' | 'append' = audioTargetMode;
 
-      // Determine starting page count and track count if appending to an existing book
+      // Determine starting page count and track count ONLY if user explicitly selected 'append'
       const existingBook = allBooks.find((b) => b.id === currentTargetId);
       let runningPages: BookPageData[] =
         currentMode === 'append' && existingBook ? [...existingBook.pages] : [];
@@ -1401,11 +1563,17 @@ export default function BadiniBookTranslatorPage() {
           file.name,
           file.type || 'audio/mp4',
           (sent, total) => {
+            // Upload phase represents 1%..20% of the total conversion so percentage and progress bar move together
+            const overallUploadPct = Math.max(
+              1,
+              Math.min(20, Math.round((sent / Math.max(1, total)) * 20))
+            );
+            setAudioProgressPercent(overallUploadPct);
             setAudioConvertStatus(
               `دەنگێ ${toEasternArabicNumerals(i + 1)} (${
                 file.name
               }): هنارتنا بلەز بۆ سێرڤەری (${toEasternArabicNumerals(
-                Math.round((sent / total) * 100)
+                overallUploadPct
               )}٪)...`
             );
           }
@@ -1427,7 +1595,7 @@ export default function BadiniBookTranslatorPage() {
                 startPageNumber: startPageNum,
                 bookTitle:
                   audioBookTitleInput.trim() ||
-                  existingBook?.title ||
+                  (fileMode === 'append' ? existingBook?.title : '') ||
                   cleanFileName ||
                   'پەرتووکا دەنگی یا رێکخستی',
                 lessonTitle: computedLessonTitle,
@@ -1443,7 +1611,7 @@ export default function BadiniBookTranslatorPage() {
             break;
           } catch (err) {
             lastStartErr = err;
-            await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+            await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
           }
         }
 
@@ -1451,17 +1619,22 @@ export default function BadiniBookTranslatorPage() {
           throw lastStartErr || new Error('شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
         }
 
+        setAudioProgressPercent((prev) => Math.max(prev, 22));
+        setAudioConvertStatus(
+          `دەنگ گەهشتە سێرڤەری — دابەشکرن و نڤیسینا بلەز دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
+        );
+
         let returnedPages: BookPageData[] = [];
         const startJobObj = startData.job as { id?: string } | undefined;
 
         if (Array.isArray(startData.pages) && startData.pages.length > 0) {
           returnedPages = startData.pages as BookPageData[];
+          setAudioProgressPercent(100);
         } else if (startJobObj?.id) {
           const jobId = startJobObj.id;
           let consecutivePollErrors = 0;
-          // Poll fast background job every 1.4s with try/catch resilience so transient network blips never fail
           while (true) {
-            await new Promise((r) => setTimeout(r, 1400));
+            await new Promise((r) => setTimeout(r, 900));
             try {
               const pollRes = await fetch(`/api/audio-to-book?jobId=${encodeURIComponent(jobId)}`, {
                 cache: 'no-store',
@@ -1478,11 +1651,29 @@ export default function BadiniBookTranslatorPage() {
               const job = pollData?.job;
               if (!job) continue;
 
-              if (job.statusMessage) {
-                setAudioConvertStatus(job.statusMessage);
-              }
+              const serverPct =
+                typeof job.progressPercent === 'number' && job.progressPercent > 0
+                  ? job.progressPercent
+                  : job.totalSegments > 0
+                  ? Math.min(98, 25 + Math.round((job.doneSegments / job.totalSegments) * 73))
+                  : 25;
+
+              setAudioProgressPercent((prevPct) => {
+                const syncedPct =
+                  job.status === 'completed' ? 100 : Math.min(98, Math.max(prevPct, serverPct));
+                if (job.statusMessage) {
+                  const syncedText = String(job.statusMessage).replace(
+                    /\([٠-٩0-9]+٪\)/g,
+                    `(${toEasternArabicNumerals(syncedPct)}٪)`
+                  );
+                  setAudioConvertStatus(syncedText);
+                }
+                return syncedPct;
+              });
+
               if (job.status === 'completed' && Array.isArray(job.pages) && job.pages.length > 0) {
                 returnedPages = job.pages as BookPageData[];
+                setAudioProgressPercent(100);
                 break;
               }
               if (job.status === 'error' || job.status === 'stopped') {
@@ -1494,7 +1685,6 @@ export default function BadiniBookTranslatorPage() {
                 );
               }
             } catch (pollErr) {
-              // If the job itself reported a terminal error, rethrow it
               if (
                 pollErr instanceof Error &&
                 !pollErr.message.toLowerCase().includes('failed to fetch') &&
@@ -1542,7 +1732,34 @@ export default function BadiniBookTranslatorPage() {
         }
       }
 
-      // Save the unified book (updating Shakhsiya book, Qawaid book, an existing custom book, or creating a new custom book)
+      // If multiple lessons are linked in runningPages, update the Cover Page block so it doesn't stay stuck on "وانا ئێکێ"
+      if (runningTracks.length > 1 && runningPages.length > 0) {
+        const firstPage = runningPages[0];
+        if (firstPage && firstPage.blocks.some((b) => b.type === 'cover')) {
+          runningPages = [
+            {
+              ...firstPage,
+              blocks: firstPage.blocks.map((b) => {
+                if (b.type !== 'cover') return b;
+                return {
+                  ...b,
+                  titleLines: b.titleLines.map((line) =>
+                    line === 'وانا ئێکێ'
+                      ? `${toEasternArabicNumerals(runningTracks.length)} وانە پێکڤە`
+                      : line.replace(
+                          /\(وانا ئێکێ\)/g,
+                          `(${toEasternArabicNumerals(runningTracks.length)} وانە پێکڤە)`
+                        )
+                  ),
+                };
+              }),
+            },
+            ...runningPages.slice(1),
+          ];
+        }
+      }
+
+      // Save the book (updating Shakhsiya book, Qawaid book, an existing custom book, or creating a new standalone custom book)
       if (audioTargetMode === 'append' && targetAppendBookId === SHAKHSIYA_QAWIYA_BOOK_ID) {
         setShakhsiyaBookPages(runningPages);
         setShakhsiyaAudioTracks(runningTracks);
@@ -1578,41 +1795,48 @@ export default function BadiniBookTranslatorPage() {
         setCurrentPage(firstNewPageNumber);
         setAudioLessonTitleInput(getKurdishLessonTitle(runningTracks.length + 1));
       } else {
-        const finalBookTitle =
+        const rawBookTitle =
           audioBookTitleInput.trim() ||
           selectedAudioFiles[0].name.replace(/\.[a-z0-9]+$/i, '') ||
           'پەرتووکا دەنگی یا رێکخستی';
+        const lessonTag = audioLessonTitleInput.trim();
+        const finalBookTitle =
+          runningTracks.length > 1
+            ? `${rawBookTitle} (${toEasternArabicNumerals(runningTracks.length)} وانە پێکڤە)`
+            : lessonTag && !rawBookTitle.includes(lessonTag)
+            ? `${rawBookTitle} (${lessonTag})`
+            : rawBookTitle;
         const finalSpeaker = audioSpeakerInput.trim() || 'مامۆستا';
         const newBook: BookProject = {
           id: currentTargetId,
-          title:
-            runningTracks.length > 1
-              ? `${finalBookTitle} (${toEasternArabicNumerals(runningTracks.length)} وانە پێکڤە)`
-              : finalBookTitle,
+          title: finalBookTitle,
           arabicTitle: selectedAudioFiles.map((f) => f.name).join(' + '),
           headerTitle: `${finalBookTitle} - ${finalSpeaker}`,
           totalPages: runningPages.length,
           pages: runningPages,
           audioTracks: runningTracks,
           isDefault: false,
-          createdAt: 'پەرتووکا دەنگی یا پێکڤەگرێدای (پەیڤ ب پەیڤ)',
+          createdAt: 'پەرتووکا دەنگی یا سەربەخۆ (پەیڤ ب پەیڤ)',
         };
 
         setCustomBooks((prev) => [newBook, ...prev]);
         setActiveBookId(currentTargetId);
-        // Automatically switch to append mode targeting this newly created book so when the user sends Audio 2 next, it links automatically!
-        setTargetAppendBookId(currentTargetId);
-        setAudioTargetMode('append');
-        setAudioLessonTitleInput(getKurdishLessonTitle(runningTracks.length + 1));
+        // Keep mode as 'new' and clear title input so the next uploaded audio creates its own separate PDF book unless the user chooses 'append'
+        setAudioTargetMode('new');
+        setAudioBookTitleInput('');
         setCurrentPage(1);
       }
 
       setSelectedAudioFiles([]);
       setActiveSection('reader');
       setDownloadSuccessMsg(
-        `دەنگ ب سەرکەفتیانە هاتە نڤیسین و د گەل پەرتووکێ هاتە گرێدان! نوکە پەرتووک ب گشتی بوو ${toEasternArabicNumerals(
-          runningPages.length
-        )} لاپەر (${toEasternArabicNumerals(runningTracks.length)} وانە پێکڤە).`
+        audioTargetMode === 'append'
+          ? `دەنگ ب سەرکەفتیانە هاتە نڤیسین و د گەل پەرتووکێ هاتە گرێدان! نوکە پەرتووک ب گشتی بوو ${toEasternArabicNumerals(
+              runningPages.length
+            )} لاپەر (${toEasternArabicNumerals(runningTracks.length)} وانە پێکڤە).`
+          : `پەرتووکا دەنگی یا نوی ب سەرکەفتیانە هاتە دروستکرن (${toEasternArabicNumerals(
+              runningPages.length
+            )} لاپەر)!`
       );
     } catch (err: unknown) {
       setAudioConvertError(
@@ -1744,7 +1968,6 @@ export default function BadiniBookTranslatorPage() {
         status: 'لاپەرێن دەستنیشانکری ب لەزاتیەکا بلند دهێنە ئامادەکرن و هنارتن...',
       });
 
-      // Extract ONLY the selected page range (startPage..endPage) so uploading a 448-page PDF is instant!
       const rawBuffer = await selectedPdfFile.arrayBuffer();
       let uploadBytes: Uint8Array = new Uint8Array(rawBuffer);
       try {
@@ -1866,15 +2089,19 @@ export default function BadiniBookTranslatorPage() {
     }
   };
 
-  // Delete a custom uploaded book (never deletes the 3 built-in books)
+  // Delete ANY book (custom or built-in) and persist deletion so it never reappears on reload
   const handleDeleteCustomBook = (bookId: string) => {
-    if (
-      bookId === DEFAULT_BOOK_ID ||
-      bookId === QAWAID_LESSON1_BOOK_ID ||
-      bookId === SHAKHSIYA_QAWIYA_BOOK_ID
-    ) {
-      return;
-    }
+    const bookToRemove = allBooks.find((b) => b.id === bookId);
+    setDeletedBookIds((prev) => {
+      const next = prev.includes(bookId) ? prev : [...prev, bookId];
+      try {
+        localStorage.setItem(STORAGE_KEY_DELETED_BOOK_IDS, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+
     setCustomBooks((prev) => {
       const filtered = prev.filter((b) => b.id !== bookId);
       try {
@@ -1884,10 +2111,127 @@ export default function BadiniBookTranslatorPage() {
       }
       return filtered;
     });
+
     if (activeBookId === bookId) {
-      setActiveBookId(SHAKHSIYA_QAWIYA_BOOK_ID);
+      const remaining = allBooks.filter((b) => b.id !== bookId);
+      setActiveBookId(remaining[0]?.id || DEFAULT_BOOK_ID);
       setCurrentPage(1);
     }
+
+    if (bookToRemove) {
+      setDownloadSuccessMsg(`پەرتووکا «${bookToRemove.title}» ب تەمامی هاتە ژێبرن.`);
+    }
+  };
+
+  // Restore any deleted built-in books if the user wants them back
+  const handleRestoreBuiltInBooks = () => {
+    setDeletedBookIds((prev) => {
+      const next = prev.filter(
+        (id) =>
+          id !== DEFAULT_BOOK_ID &&
+          id !== QAWAID_LESSON1_BOOK_ID &&
+          id !== SHAKHSIYA_QAWIYA_BOOK_ID
+      );
+      try {
+        localStorage.setItem(STORAGE_KEY_DELETED_BOOK_IDS, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+    setDownloadSuccessMsg('پەرتووکێن سەرەکی هاتنە زڤڕاندن بۆ پەرتووکخانەیێ.');
+  };
+
+  // Delete a specific lesson/lecture (وانە / دەرس) from a book, remove its pages, and renumber remaining pages & lessons
+  const handleDeleteLessonTrack = (bookId: string, trackId: string) => {
+    const targetBook = allBooks.find((b) => b.id === bookId);
+    if (!targetBook || !targetBook.audioTracks || targetBook.audioTracks.length === 0) return;
+
+    const trackToDelete = targetBook.audioTracks.find((t) => t.id === trackId);
+    if (!trackToDelete) return;
+
+    // If this is the only lesson in the book, delete the book itself
+    if (targetBook.audioTracks.length <= 1) {
+      handleDeleteCustomBook(bookId);
+      return;
+    }
+
+    const remainingTracksRaw = targetBook.audioTracks.filter((t) => t.id !== trackId);
+    const newPages: BookPageData[] = [];
+    const updatedTracks: AudioLessonTrack[] = [];
+
+    // If Page 1 was a cover page and the user deleted Lesson 1, preserve the cover page at Page 1
+    if (
+      trackToDelete.startPage === 1 &&
+      targetBook.pages[0]?.blocks.some((b) => b.type === 'cover')
+    ) {
+      newPages.push({
+        ...targetBook.pages[0],
+        pageNumber: 1,
+      });
+    }
+
+    for (let idx = 0; idx < remainingTracksRaw.length; idx++) {
+      const trk = remainingTracksRaw[idx];
+      const trkPages = targetBook.pages.filter(
+        (p) =>
+          p.pageNumber >= trk.startPage &&
+          p.pageNumber <= trk.endPage &&
+          !(idx === 0 && newPages.length === 1 && p.pageNumber === 1)
+      );
+
+      const newStart = newPages.length === 0 ? 1 : newPages.length + 1;
+      const trackJumpStart = idx === 0 && newPages.length === 1 ? 1 : newStart;
+
+      for (const tp of trkPages) {
+        newPages.push({
+          ...tp,
+          pageNumber: newPages.length + 1,
+        });
+      }
+
+      const newEnd = Math.max(trackJumpStart, newPages.length);
+      updatedTracks.push({
+        ...trk,
+        startPage: trackJumpStart,
+        endPage: newEnd,
+      });
+    }
+
+    if (bookId === SHAKHSIYA_QAWIYA_BOOK_ID) {
+      setShakhsiyaBookPages(newPages);
+      setShakhsiyaAudioTracks(updatedTracks);
+    } else if (bookId === QAWAID_LESSON1_BOOK_ID) {
+      setQawaidBookPages(newPages);
+      setQawaidAudioTracks(updatedTracks);
+    } else {
+      setCustomBooks((prev) =>
+        prev.map((b) => {
+          if (b.id !== bookId) return b;
+          const cleanBaseTitle = b.title.replace(/\s*\([٠-٩0-9]+\s*وانە پێکڤە\)$/, '');
+          return {
+            ...b,
+            title:
+              updatedTracks.length > 1
+                ? `${cleanBaseTitle} (${toEasternArabicNumerals(updatedTracks.length)} وانە پێکڤە)`
+                : cleanBaseTitle,
+            totalPages: newPages.length,
+            pages: newPages,
+            audioTracks: updatedTracks,
+          };
+        })
+      );
+    }
+
+    if (activeBook.id === bookId) {
+      setCurrentPage((prev) => Math.min(Math.max(1, prev), newPages.length || 1));
+    }
+
+    setDownloadSuccessMsg(
+      `«${trackToDelete.title}» ژ پەرتووکێ هاتە ژێبرن! نوکە پەرتووک بوو ${toEasternArabicNumerals(
+        newPages.length
+      )} لاپەر.`
+    );
   };
 
   // Compress and load a reference design image (cover / page frame / color palette) for the AI Design Bot
@@ -1971,7 +2315,7 @@ export default function BadiniBookTranslatorPage() {
     }
   };
 
-  // Handle interactive Design Studio Bot ("دیزاینەرێ پەرتووکێ و بەرگی و رەنگێن فۆنتان")
+  // Handle interactive Design Studio Bot ("ڕۆبۆتێ گشتی یێ دیزاینکرن و رێکخستنا پەرتووکێ")
   const handleSendChatMessage = async (
     e?: React.FormEvent,
     presetPrompt?: string
@@ -1985,7 +2329,7 @@ export default function BadiniBookTranslatorPage() {
     const messageText =
       rawText ||
       (attachedImgUrl
-        ? 'تکایە دیزاینا پەرتووکێ، بەرگێ پەرتووکێ و رەنگێن فۆنتان رێک وەکی ڤی وێنەی چێکە.'
+        ? 'تکایە دیزاینا پەرتووکێ، سەرێ لاپەری، بەرگێ پەرتووکێ و رەنگان رێک وەکی ڤی وێنەی چێکە.'
         : '');
 
     if ((!messageText && !attachedImgUrl) || isChatLoading) return;
@@ -1996,13 +2340,10 @@ export default function BadiniBookTranslatorPage() {
       setChatImageName('');
     }
 
-    if (attachedImgUrl) {
-      handleEnsureCoverOnPage1();
-    }
-
     const previousDesignSnap: BookDesignConfig = JSON.parse(
       JSON.stringify(activeBookDesign)
     );
+    const previousPagesSnap: BookPageData[] = JSON.parse(JSON.stringify(pages));
 
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
@@ -2012,7 +2353,7 @@ export default function BadiniBookTranslatorPage() {
       imageName: attachedImgName || undefined,
     };
 
-    const recentHistoryPayload = chatMessages.slice(-4).map((m) => ({
+    const recentHistoryPayload = chatMessages.slice(-5).map((m) => ({
       role: m.role,
       text: m.text,
     }));
@@ -2030,7 +2371,9 @@ export default function BadiniBookTranslatorPage() {
           imageDataUrl: attachedImgUrl || undefined,
           imageMimeType: attachedImgUrl ? attachedImgMime : undefined,
           currentDesign: activeBookDesign,
-          bookTitle: activeBook.headerTitle,
+          bookTitle: activeBookDesign.customHeaderTitle || activeBook.headerTitle,
+          currentPage,
+          totalPages: maxPageCount,
           history: recentHistoryPayload,
         }),
       });
@@ -2040,9 +2383,64 @@ export default function BadiniBookTranslatorPage() {
         throw new Error(data.error || 'شاشی د بەرسڤدانێ دا چێبوو');
       }
 
+      let didChangePages = false;
+
+      // 1. Handle Page Deletion if requested by User
+      if (Array.isArray(data.deletePageNumbers) && data.deletePageNumbers.length > 0) {
+        const toDeleteSet = new Set<number>(data.deletePageNumbers);
+        const remaining = pages.filter((p) => !toDeleteSet.has(p.pageNumber));
+        if (remaining.length >= 1 && remaining.length < pages.length) {
+          replacePagesInActiveBook(remaining);
+          setCurrentPage((prev) => Math.min(prev, remaining.length));
+          didChangePages = true;
+        }
+      }
+
+      // 2. Handle Removing or Adding Cover if requested by User
+      if (data.removeCover) {
+        const p1 = pages[0];
+        if (p1 && p1.blocks.some((b) => b.type === 'cover')) {
+          const nonCoverBlocks = p1.blocks.filter((b) => b.type !== 'cover');
+          if (nonCoverBlocks.length > 0) {
+            updatePageInActiveBook(1, (prevP1) => ({
+              ...prevP1,
+              blocks: nonCoverBlocks,
+            }));
+          } else if (pages.length > 1) {
+            replacePagesInActiveBook(pages.slice(1));
+          }
+          didChangePages = true;
+        }
+      } else if (data.addCover) {
+        handleEnsureCoverOnPage1();
+        didChangePages = true;
+      }
+
+      // 3. Handle Recommended Font Family & Font Size
+      if (
+        data.recommendedFontId &&
+        BOOK_FONT_OPTIONS.some((f) => f.id === data.recommendedFontId)
+      ) {
+        handleSelectBookFont(data.recommendedFontId);
+      }
+      if (typeof data.recommendedFontSizePt === 'number') {
+        setFontSizePt(data.recommendedFontSizePt);
+      }
+
+      // 4. Handle Design, Header Style, Header Title, Colors, Frame, and Cover Updates
       if (data.didUpdateDesign && data.updatedDesign) {
         const updatedCfg = data.updatedDesign as BookDesignConfig;
         updateActiveBookDesign(updatedCfg);
+
+        // If user switched to a non-cover header style (like 'chamfered-boxes') while on Page 1, jump to Page 2 so they immediately see the running header!
+        if (
+          updatedCfg.headerStyle &&
+          updatedCfg.headerStyle !== activeBookDesign.headerStyle &&
+          currentPage === 1 &&
+          maxPageCount >= 2
+        ) {
+          setCurrentPage(2);
+        }
 
         // Also sync cover block on Page 1 if the user/bot customized cover text fields
         if (updatedCfg.cover) {
@@ -2079,16 +2477,18 @@ export default function BadiniBookTranslatorPage() {
         }
 
         setEditorStatusBanner(
-          data.reply || 'دیزاینا پەرتووکێ و رەنگێن فۆنتان ب سەرکەفتیانە هاتنە نوێکرن!'
+          data.reply || 'دیزاین و داخازیێن تە ب سەرکەفتیانە هاتنە جێبەجێکرن!'
         );
       }
 
       const assistantMsg: ChatMessage = {
         id: `a-${Date.now()}`,
         role: 'assistant',
-        text: data.reply || 'دیزاینا پەرتووکێ هاتە نوێکرن.',
-        didUpdateDesign: Boolean(data.didUpdateDesign),
-        previousDesignSnapshot: data.didUpdateDesign ? previousDesignSnap : undefined,
+        text: data.reply || 'گوهۆڕین هاتنە جێبەجێکرن.',
+        didUpdateDesign: Boolean(data.didUpdateDesign || didChangePages),
+        previousDesignSnapshot:
+          data.didUpdateDesign || didChangePages ? previousDesignSnap : undefined,
+        previousPagesSnapshot: didChangePages ? previousPagesSnap : undefined,
       };
 
       setChatMessages((prev) => [...prev, assistantMsg]);
@@ -2109,18 +2509,21 @@ export default function BadiniBookTranslatorPage() {
   };
 
   const handleUndoChatDesign = (msg: ChatMessage) => {
-    if (!msg.previousDesignSnapshot) return;
-    const snap = msg.previousDesignSnapshot;
-    updateActiveBookDesign(snap);
+    if (msg.previousDesignSnapshot) {
+      updateActiveBookDesign(msg.previousDesignSnapshot);
+    }
+    if (msg.previousPagesSnapshot) {
+      replacePagesInActiveBook(msg.previousPagesSnapshot);
+    }
     setChatMessages((prev) => [
       ...prev,
       {
         id: `undo-${Date.now()}`,
         role: 'assistant',
-        text: 'دیزاینا پەرتووکێ و رەنگێن فۆنتان زڤڕین سەر رەوشا خۆ یا بەرێ.',
+        text: 'دیزاین و لاپەرێن پەرتووکێ زڤڕین سەر رەوشا خۆ یا بەرێ.',
       },
     ]);
-    setEditorStatusBanner('دیزاینا پەرتووکێ زڤڕی سەر رەوشا خۆ یا بەرێ.');
+    setEditorStatusBanner('دیزاین و لاپەر زڤڕین سەر رەوشا خۆ یا بەرێ.');
   };
 
   // Ensure Page 1 has a Cover block if the user wants to add/customize a cover on a book without one
@@ -2900,45 +3303,80 @@ export default function BadiniBookTranslatorPage() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[11px] font-heading font-bold text-slate-500">
-                        وانەیێن پێکڤەگرێدای:
+                        وانەیێن ڤێ پەرتووکێ:
                       </span>
                       {activeBook.audioTracks.map((trk, idx) => {
                         const isCurrentTrack =
                           currentPage >= trk.startPage && currentPage <= trk.endPage;
                         return (
-                          <button
+                          <div
                             key={trk.id}
-                            type="button"
-                            onClick={() => setCurrentPage(trk.startPage)}
-                            className={`px-3 py-1 text-[11px] rounded-lg transition-all cursor-pointer ${
+                            className={`inline-flex items-center rounded-lg border transition-all overflow-hidden ${
                               isCurrentTrack
-                                ? 'bg-[#2563EB] text-white font-heading font-bold'
-                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200 font-subtext'
+                                ? 'bg-[#2563EB] text-white border-[#2563EB]'
+                                : 'bg-slate-100 text-slate-700 border-slate-200/80 hover:bg-slate-200/80'
                             }`}
                           >
-                            وانا {toEasternArabicNumerals(idx + 1)} (ل{' '}
-                            {toEasternArabicNumerals(trk.startPage)}–
-                            {toEasternArabicNumerals(trk.endPage)})
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => setCurrentPage(trk.startPage)}
+                              className={`px-2.5 py-1 text-[11px] cursor-pointer ${
+                                isCurrentTrack ? 'font-heading font-bold' : 'font-subtext'
+                              }`}
+                            >
+                              وانا {toEasternArabicNumerals(idx + 1)} (ل{' '}
+                              {toEasternArabicNumerals(trk.startPage)}–
+                              {toEasternArabicNumerals(trk.endPage)})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLessonTrack(activeBook.id, trk.id)}
+                              title="ژێبرنا ڤێ وانێ (دەرسێ)"
+                              className={`px-1.5 py-1 border-r transition-colors cursor-pointer ${
+                                isCurrentTrack
+                                  ? 'border-white/25 text-white/90 hover:bg-red-600 hover:text-white'
+                                  : 'border-slate-200 text-slate-400 hover:bg-red-50 hover:text-red-600'
+                              }`}
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAudioTargetMode('append');
-                        setTargetAppendBookId(activeBook.id);
-                        setAudioLessonTitleInput(
-                          getKurdishLessonTitle((activeBook.audioTracks?.length || 1) + 1)
-                        );
-                        setActiveSection('audio');
-                      }}
-                      className="px-3 py-1 text-[11px] font-heading font-bold text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] rounded-lg flex items-center gap-1 cursor-pointer shrink-0"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>زێدەکرنا دەنگێ دووێ</span>
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAudioTargetMode('new');
+                          setAudioLessonTitleInput(
+                            getKurdishLessonTitle((activeBook.audioTracks?.length || 1) + 1)
+                          );
+                          setActiveSection('audio');
+                        }}
+                        className="px-3 py-1 text-[11px] font-heading font-bold text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] rounded-lg flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>دەنگێ نوی (پەرتووکا سەربەخۆ)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAudioTargetMode('append');
+                          setTargetAppendBookId(activeBook.id);
+                          setAudioLessonTitleInput(
+                            getKurdishLessonTitle((activeBook.audioTracks?.length || 1) + 1)
+                          );
+                          setActiveSection('audio');
+                        }}
+                        className="px-3 py-1 text-[11px] font-heading font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        <Link2 className="w-3.5 h-3.5 text-[#2563EB]" />
+                        <span>گرێدانا دەنگێ دووێ ب ڤێ ڤە</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -3131,25 +3569,24 @@ export default function BadiniBookTranslatorPage() {
                         {audioConvertStatus}
                       </span>
                     </div>
-                    <div className="px-3 py-1 rounded-full bg-white text-[#1E40AF] border border-[#DCE7FF] flex items-center gap-1.5 text-[11px] font-heading font-bold shrink-0">
-                      <Clock className="w-3.5 h-3.5 text-[#2563EB] shrink-0" />
-                      <span>
-                        دەمێ بۆری: {formatDurationKurdish(audioElapsedSec)} · دەمێ مای:{' '}
-                        {formatDurationKurdish(Math.max(4, estimatedAudioTotalSec - audioElapsedSec))}
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <span className="px-2.5 py-1 rounded-full bg-[#2563EB] text-white text-[11px] font-heading font-extrabold tabular-nums">
+                        {toEasternArabicNumerals(Math.min(100, Math.max(1, audioProgressPercent)))}٪
                       </span>
+                      <div className="px-3 py-1 rounded-full bg-white text-[#1E40AF] border border-[#DCE7FF] flex items-center gap-1.5 text-[11px] font-heading font-bold">
+                        <Clock className="w-3.5 h-3.5 text-[#2563EB] shrink-0" />
+                        <span>
+                          دەمێ بۆری: {formatDurationKurdish(audioElapsedSec)} · دەمێ مای:{' '}
+                          {formatDurationKurdish(remainingAudioSec)}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                  <div className="w-full h-2 bg-slate-200/70 rounded-full overflow-hidden">
+                  <div className="w-full h-2.5 bg-slate-200/80 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-[#2563EB] rounded-full transition-all duration-300"
                       style={{
-                        width: `${Math.min(
-                          95,
-                          Math.max(
-                            8,
-                            Math.round((audioElapsedSec / Math.max(1, estimatedAudioTotalSec)) * 100)
-                          )
-                        )}%`,
+                        width: `${Math.min(100, Math.max(2, audioProgressPercent))}%`,
                       }}
                     />
                   </div>
@@ -3214,7 +3651,7 @@ export default function BadiniBookTranslatorPage() {
                   فایلا دەنگی بکێشە ڤێرە یان{' '}
                   <span className="text-[#2563EB] font-heading font-bold group-hover:underline">
                     {selectedAudioFiles.length > 0
-                      ? 'زێدەکرنا فایلەکا دی یا دەنگی (دەنگێ دووێ / سێیێ...)'
+                      ? 'زێدەکرنا فایلەکا دی یا دەنگی'
                       : 'فایلا خۆ یا دەنگی هەلبژێرە بۆ بارکرنێ'}
                   </span>
                 </p>
@@ -3238,7 +3675,7 @@ export default function BadiniBookTranslatorPage() {
                 <div className="p-4 sm:p-5 bg-[#F8FAFF] border border-[#DCE7FF] rounded-2xl space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="font-extrabold text-slate-800">
-                      فایلێن دەنگی یێن ئامادە بۆ نڤیسین و گرێدانێ (
+                      فایلێن دەنگی یێن ئامادە بۆ نڤیسینێ (
                       {toEasternArabicNumerals(selectedAudioFiles.length)}):
                     </span>
                     <span className="px-2.5 py-1 rounded-lg bg-white text-[#1E40AF] border border-[#DCE7FF] font-bold flex items-center gap-1.5">
@@ -3277,40 +3714,16 @@ export default function BadiniBookTranslatorPage() {
                 </div>
               )}
 
-              {/* Mode Selector: Append to Existing Book vs. Start New Book */}
+              {/* Mode Selector: 1. Standalone New Book (Default) vs 2. Append to Existing Book */}
               <div className="space-y-3 pt-2 border-t border-slate-100">
                 <label className="block text-xs font-extrabold text-slate-800">
-                  شێوازێ گرێدانا دەنگی هەلبژێرە:
+                  شێوازێ چێکرنا پەرتووکێ هەلبژێرە:
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <button
                     type="button"
-                    onClick={() => setAudioTargetMode('append')}
-                    className={`p-4 rounded-xl border text-right transition-all cursor-pointer flex flex-col gap-1 ${
-                      audioTargetMode === 'append'
-                        ? 'bg-[#EFF6FF] border-[#2563EB] ring-1 ring-[#2563EB]'
-                        : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100/70'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                        <Link2 className="w-4 h-4 text-[#2563EB]" />
-                        <span>پێکڤەگرێدان دگەل پەرتووکێ (دەنگێ دووێ، سێیێ...)</span>
-                      </span>
-                      {audioTargetMode === 'append' && (
-                        <Check className="w-4 h-4 text-[#2563EB] shrink-0" />
-                      )}
-                    </div>
-                    <p className="text-[11px] text-slate-600 leading-relaxed">
-                      دەنگێ نوی دێ ل دویڤ لاپەرێ دوماهیێ یێ پەرتووکێ زێدە بیت دا هەمی دەنگ پێکڤە ببنە ئێک پەرتووک.
-                    </p>
-                  </button>
-
-                  <button
-                    type="button"
                     onClick={() => {
                       setAudioTargetMode('new');
-                      setAudioLessonTitleInput('وانا ئێکێ');
                     }}
                     className={`p-4 rounded-xl border text-right transition-all cursor-pointer flex flex-col gap-1 ${
                       audioTargetMode === 'new'
@@ -3321,21 +3734,49 @@ export default function BadiniBookTranslatorPage() {
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                         <Plus className="w-4 h-4 text-[#2563EB]" />
-                        <span>پەرتووکەکا نوی دەستپێبکە (دەنگێ ئێکێ)</span>
+                        <span>١. پەرتووکەکا نوی و سەربەخۆ چێکە (جودا ژ دەنگێن دی)</span>
                       </span>
                       {audioTargetMode === 'new' && (
                         <Check className="w-4 h-4 text-[#2563EB] shrink-0" />
                       )}
                     </div>
                     <p className="text-[11px] text-slate-600 leading-relaxed">
-                      بۆ دەنگێ ئێکێ بەرگەکێ نوی چێدکەت، و پاشان دەنگێ دووێ و سێیێ راستەوخۆ پێڤە دگرێدەت.
+                      بتنێ ڤی دەنگی دکەتە پەرتووکەکا سەربەخۆ (PDF / Word) بێی کو وانا ئێکێ یان چ پەرتووکێن دی پێڤە گرێبدەت.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAudioTargetMode('append');
+                      const tb = allBooks.find((b) => b.id === targetAppendBookId);
+                      const nextNum = (tb?.audioTracks?.length || 1) + 1;
+                      setAudioLessonTitleInput(getKurdishLessonTitle(nextNum));
+                    }}
+                    className={`p-4 rounded-xl border text-right transition-all cursor-pointer flex flex-col gap-1 ${
+                      audioTargetMode === 'append'
+                        ? 'bg-[#EFF6FF] border-[#2563EB] ring-1 ring-[#2563EB]'
+                        : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100/70'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                        <Link2 className="w-4 h-4 text-[#2563EB]" />
+                        <span>٢. پێکڤەگرێدان دگەل پەرتووکەکا بەرێ</span>
+                      </span>
+                      {audioTargetMode === 'append' && (
+                        <Check className="w-4 h-4 text-[#2563EB] shrink-0" />
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-600 leading-relaxed">
+                      دەنگێ نوی دێ ل دویڤ لاپەرێ دوماهیێ یێ پەرتووکا هەلبژارتی زێدە بیت دا هەردوو دەنگ پێکڤە ببنە ئێک پەرتووک.
                     </p>
                   </button>
                 </div>
 
-                {/* If Append Mode is active, select which book to append onto */}
+                {/* If Append Mode is active, select which book to append onto AND manage/delete its existing lessons */}
                 {audioTargetMode === 'append' && (
-                  <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-xl space-y-2">
+                  <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-xl space-y-3">
                     <label className="block text-xs font-bold text-slate-800">
                       دێ ڤی دەنگی ب کیژ پەرتووکێ ڤە گرێدەی؟
                     </label>
@@ -3357,6 +3798,50 @@ export default function BadiniBookTranslatorPage() {
                         </option>
                       ))}
                     </select>
+
+                    {/* Show existing lessons of the selected target book with ability to delete any wrong lesson */}
+                    {(() => {
+                      const selectedTargetBook = allBooks.find((b) => b.id === targetAppendBookId);
+                      if (
+                        !selectedTargetBook ||
+                        !selectedTargetBook.audioTracks ||
+                        selectedTargetBook.audioTracks.length === 0
+                      ) {
+                        return null;
+                      }
+                      return (
+                        <div className="pt-2 border-t border-slate-200/70 space-y-2">
+                          <div className="text-[11px] font-heading font-bold text-slate-600">
+                            وانەیێن نوکە د ناڤ ڤێ پەرتووکێ دا (ئەگەر وانەیەک خەلەت هاتبيت دشێی ژێببەی):
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {selectedTargetBook.audioTracks.map((trk, idx) => (
+                              <div
+                                key={trk.id}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs"
+                              >
+                                <span className="font-subtext font-bold text-slate-800">
+                                  وانا {toEasternArabicNumerals(idx + 1)}: {trk.title} (ل{' '}
+                                  {toEasternArabicNumerals(trk.startPage)}–
+                                  {toEasternArabicNumerals(trk.endPage)})
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDeleteLessonTrack(selectedTargetBook.id, trk.id)
+                                  }
+                                  className="px-2 py-0.5 rounded-md bg-red-50 hover:bg-red-100 text-red-600 font-heading font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                                  title="ژێبرنا ڤێ وانێ"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>ژێبرن</span>
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -3379,13 +3864,13 @@ export default function BadiniBookTranslatorPage() {
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        ناڤێ گشتی یێ پەرتووکێ
+                        ناڤێ پەرتووکێ
                       </label>
                       <input
                         type="text"
                         value={audioBookTitleInput}
                         onChange={(e) => setAudioBookTitleInput(e.target.value)}
-                        placeholder="بۆ نموونە: پەرتووکا القواعد الأربع"
+                        placeholder="بۆ نموونە: پەرتووکا القواعد الأربع - وانا دووێ"
                         className="w-full px-3.5 py-2.5 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
                       />
                     </div>
@@ -3407,8 +3892,8 @@ export default function BadiniBookTranslatorPage() {
                     <div className="space-y-1">
                       <p className="text-xs text-slate-600">
                         {audioTargetMode === 'append'
-                          ? 'ئەڤ دەنگە پەیڤ ب پەیڤ دێ هێتە نڤیسین و راستەوخۆ ب دوماهیا لاپەرێن پەرتووکێ ڤە هێتە گرێدان.'
-                          : 'دێ پەرتووکەکا نوی ب ڤی دەنگی دەستپێکەت و دەنگێن د دویڤ دا دێ پێڤە هێنە گرێدان.'}
+                          ? 'ئەڤ دەنگە پەیڤ ب پەیڤ دێ هێتە نڤیسین و راستەوخۆ ب دوماهیا لاپەرێن پەرتووکا هەلبژارتی ڤە هێتە گرێدان.'
+                          : 'ئەڤ دەنگە ب تەمامی ب جودا و سەربەخۆ دێ بیتە پەرتووک (PDF / Word) بێی کو وانا ئێکێ بکەڤیتە سەر.'}
                       </p>
                       <div className="flex items-center gap-1.5 text-xs font-bold text-[#1E40AF]">
                         <Clock className="w-3.5 h-3.5 shrink-0" />
@@ -3437,7 +3922,7 @@ export default function BadiniBookTranslatorPage() {
                           <span>
                             {audioTargetMode === 'append'
                               ? 'ڤی دەنگی ب پەرتووکێ ڤە گرێبدە (WORD / PDF)'
-                              : 'بکە پەرتووک (WORD و PDF)'}
+                              : 'بکە پەرتووکەکا سەربەخۆ (WORD و PDF)'}
                           </span>
                         </>
                       )}
@@ -3462,9 +3947,20 @@ export default function BadiniBookTranslatorPage() {
                   </span>
                 </h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  ئەو پەرتووکێن ب رێکا دەنگی (MP3 / ڤیدیۆ) هاتینە دروستکرن ل ڤێرە ب جودا ژ پەرتووکێن وەرگێرای دیاردبن
+                  ل ڤێرە دشێی هەر پەرتووکەکا دەنگی یان هەر وانەیەکا (دەرسەکا) خەلەت ژێببەی، یان ب PDF و Word داگری
                 </p>
               </div>
+              {(deletedBookIds.includes(SHAKHSIYA_QAWIYA_BOOK_ID) ||
+                deletedBookIds.includes(QAWAID_LESSON1_BOOK_ID)) && (
+                <button
+                  type="button"
+                  onClick={handleRestoreBuiltInBooks}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-heading font-bold flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-[#2563EB]" />
+                  <span>زڤڕاندنا پەرتووکێن سەرەکی</span>
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-1 gap-3">
@@ -3478,95 +3974,137 @@ export default function BadiniBookTranslatorPage() {
                       setCurrentPage(1);
                       setActiveSection('reader');
                     }}
-                    className={`p-4 sm:p-5 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer group ${
+                    className={`p-4 sm:p-5 rounded-xl border transition-all flex flex-col gap-3 cursor-pointer group ${
                       isSelected
                         ? 'bg-[#F8FAFF] border-[#2563EB]/40 shadow-xs'
                         : 'bg-white hover:bg-slate-50/80 border-slate-200/80'
                     }`}
                   >
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                        <span className="px-2.5 py-0.5 rounded-md bg-[#EFF6FF] text-[#2563EB] font-bold flex items-center gap-1">
-                          <Headphones className="w-3 h-3" />
-                          <span>پەرتووکا دەنگی</span>
-                        </span>
-                        <span>·</span>
-                        <span className="tabular-nums font-bold text-slate-700">
-                          {toEasternArabicNumerals(book.pages.length)} لاپەر
-                        </span>
-                        {book.audioTracks && book.audioTracks.length > 0 && (
-                          <>
-                            <span>·</span>
-                            <span className="text-slate-600 font-medium">
-                              {toEasternArabicNumerals(book.audioTracks.length)} وانە
-                            </span>
-                          </>
-                        )}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                          <span className="px-2.5 py-0.5 rounded-md bg-[#EFF6FF] text-[#2563EB] font-bold flex items-center gap-1">
+                            <Headphones className="w-3 h-3" />
+                            <span>پەرتووکا دەنگی</span>
+                          </span>
+                          <span>·</span>
+                          <span className="tabular-nums font-bold text-slate-700">
+                            {toEasternArabicNumerals(book.pages.length)} لاپەر
+                          </span>
+                          {book.audioTracks && book.audioTracks.length > 0 && (
+                            <>
+                              <span>·</span>
+                              <span className="text-slate-600 font-medium">
+                                {toEasternArabicNumerals(book.audioTracks.length)} وانە
+                              </span>
+                            </>
+                          )}
+                        </div>
+                        <div className="text-xs sm:text-[13.5px] font-heading font-bold text-slate-900 group-hover:text-[#2563EB] transition-colors leading-relaxed">
+                          {book.title}
+                        </div>
                       </div>
-                      <div className="text-xs sm:text-[13.5px] font-heading font-bold text-slate-900 group-hover:text-[#2563EB] transition-colors leading-relaxed">
-                        {book.title}
-                      </div>
-                    </div>
 
-                    <div
-                      className="flex flex-wrap items-center gap-2 shrink-0"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveBookId(book.id);
-                          setCurrentPage(1);
-                          setActiveSection('reader');
-                        }}
-                        className="px-3.5 py-1.5 text-xs font-heading font-bold rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                      <div
+                        className="flex flex-wrap items-center gap-2 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <BookOpen className="w-3.5 h-3.5" />
-                        <span>دەستپێکرنا خواندنێ</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleExportSpecificBookWord(
-                            book.pages,
-                            book.headerTitle,
-                            `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.doc`,
-                            book.id
-                          )
-                        }
-                        disabled={isGeneratingWord}
-                        className="px-3 py-1.5 text-xs font-heading font-bold text-[#1E40AF] bg-[#E8F0FE] hover:bg-[#D2E3FC] rounded-lg cursor-pointer flex items-center gap-1"
-                      >
-                        <FileText className="w-3.5 h-3.5" />
-                        <span>WORD</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleExportSpecificBookPdf(
-                            book.pages,
-                            book.headerTitle,
-                            `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.pdf`,
-                            book.id
-                          )
-                        }
-                        disabled={isGeneratingPdf}
-                        className="px-3 py-1.5 text-xs font-heading font-bold text-[#B91C1C] bg-[#FEE2E2] hover:bg-[#FECACA] rounded-lg cursor-pointer flex items-center gap-1"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>PDF</span>
-                      </button>
-                      {!book.isDefault && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveBookId(book.id);
+                            setCurrentPage(1);
+                            setActiveSection('reader');
+                          }}
+                          className="px-3.5 py-1.5 text-xs font-heading font-bold rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                        >
+                          <BookOpen className="w-3.5 h-3.5" />
+                          <span>دەستپێکرنا خواندنێ</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleExportSpecificBookWord(
+                              book.pages,
+                              book.headerTitle,
+                              `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.doc`,
+                              book.id
+                            )
+                          }
+                          disabled={isGeneratingWord}
+                          className="px-3 py-1.5 text-xs font-heading font-bold text-[#1E40AF] bg-[#E8F0FE] hover:bg-[#D2E3FC] rounded-lg cursor-pointer flex items-center gap-1"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          <span>WORD</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleExportSpecificBookPdf(
+                              book.pages,
+                              book.headerTitle,
+                              `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.pdf`,
+                              book.id
+                            )
+                          }
+                          disabled={isGeneratingPdf}
+                          className="px-3 py-1.5 text-xs font-heading font-bold text-[#B91C1C] bg-[#FEE2E2] hover:bg-[#FECACA] rounded-lg cursor-pointer flex items-center gap-1"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>PDF</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleDeleteCustomBook(book.id)}
-                          title="ژێبرنا ڤێ پەرتووکا زێدەکری"
-                          className="p-2 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors cursor-pointer"
+                          title="ژێبرنا ڤێ پەرتووکێ"
+                          className="px-2.5 py-1.5 text-xs font-heading font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>ژێبرن</span>
                         </button>
-                      )}
+                      </div>
                     </div>
+
+                    {/* Individual Lessons (وانە / دەرس) inside this book with per-lesson Read & Delete buttons */}
+                    {book.audioTracks && book.audioTracks.length > 0 && (
+                      <div
+                        className="pt-2.5 border-t border-slate-100 flex flex-wrap items-center gap-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span className="text-[11px] font-heading font-bold text-slate-500">
+                          وانەیێن ناڤ پەرتووکێ:
+                        </span>
+                        {book.audioTracks.map((trk, idx) => (
+                          <div
+                            key={trk.id}
+                            className="inline-flex items-center rounded-lg bg-slate-50 border border-slate-200/90 overflow-hidden text-[11px]"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveBookId(book.id);
+                                setCurrentPage(trk.startPage);
+                                setActiveSection('reader');
+                              }}
+                              className="px-2.5 py-1 font-subtext font-bold text-slate-700 hover:text-[#2563EB] cursor-pointer"
+                            >
+                              وانا {toEasternArabicNumerals(idx + 1)} (ل{' '}
+                              {toEasternArabicNumerals(trk.startPage)}–
+                              {toEasternArabicNumerals(trk.endPage)})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLessonTrack(book.id, trk.id)}
+                              title="ژێبرنا ڤێ وانێ (دەرسێ)"
+                              className="px-2 py-1 border-r border-slate-200 text-red-600 hover:bg-red-50 font-heading font-bold flex items-center gap-0.5 cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>ژێبرنا وانێ</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -3804,9 +4342,19 @@ export default function BadiniBookTranslatorPage() {
                   </span>
                 </h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  کلیک ل سەر هەر پەرتووکەکێ بکە دا ئێکسەر دەست ب خواندنا وێ بهێتە کرن، یان ب شێوەیێ WORD یان PDF داگرە
+                  کلیک ل سەر هەر پەرتووکەکێ بکە دا ئێکسەر دەست ب خواندنا وێ بهێتە کرن، یان ب شێوەیێ WORD یان PDF داگرە یان ژێببە
                 </p>
               </div>
+              {deletedBookIds.includes(DEFAULT_BOOK_ID) && (
+                <button
+                  type="button"
+                  onClick={handleRestoreBuiltInBooks}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-heading font-bold flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-[#2563EB]" />
+                  <span>زڤڕاندنا پەرتووکا سەرەکی</span>
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-1 gap-3">
@@ -3829,7 +4377,7 @@ export default function BadiniBookTranslatorPage() {
                     <div className="space-y-1">
                       <div className="flex items-center gap-2 text-xs text-slate-500">
                         <span className="font-bold text-[#2563EB]">
-                          {book.createdAt || (book.isDefault ? 'پەرتووکا سەرەکی (پاراستی)' : 'پەرتووکا زێدەکری')}
+                          {book.createdAt || (book.isDefault ? 'پەرتووکا سەرەکی' : 'پەرتووکا زێدەکری')}
                         </span>
                         <span>·</span>
                         <span className="tabular-nums font-bold text-slate-700">
@@ -3889,16 +4437,15 @@ export default function BadiniBookTranslatorPage() {
                         <Download className="w-3.5 h-3.5" />
                         <span>PDF</span>
                       </button>
-                      {!book.isDefault && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCustomBook(book.id)}
-                          title="ژێبرنا ڤێ پەرتووکا زێدەکری"
-                          className="p-2 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCustomBook(book.id)}
+                        title="ژێبرنا ڤێ پەرتووکێ"
+                        className="px-2.5 py-1.5 text-xs font-heading font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>ژێبرن</span>
+                      </button>
                     </div>
                   </div>
                 );
@@ -3975,997 +4522,227 @@ export default function BadiniBookTranslatorPage() {
       )}
 
       {/* =====================================================================
-          SECTION 5: BOOK, COVER & 1/2/3-COLOR FONT DESIGN STUDIO + AI DESIGN BOT
-          ("دیزاینەرێ پەرتووکێ، بەرگێ پەرتووکێ و رەنگێن فۆنتان")
+          SECTION 5: UNIFIED AI BOOK & DESIGN STUDIO ASSISTANT
+          ("ڕۆبۆتێ زیرەک یێ دیزاینکرن و رێکخستنا پەرتووکێ")
          ===================================================================== */}
       {activeSection === 'chat' && (
         <main className="no-print flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-2.5 pb-6 sm:py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left/Main Studio Panel (7 cols on desktop): 4 Sub-Tabs (AI Design Bot, 1/2/3 Font Colors, Cover Designer, Interior Themes) */}
-          <div className="lg:col-span-7 bg-white border border-slate-200/80 rounded-2xl shadow-[0_10px_35px_rgba(15,23,42,0.04)] flex flex-col overflow-hidden min-h-[600px]">
-            {/* Studio Header & 4-Tab Bar */}
-            <div className="px-4 sm:px-5 py-3.5 bg-slate-900 text-white space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Palette className="w-4 h-4 text-amber-400 shrink-0" />
-                  <span className="text-xs sm:text-sm font-extrabold">
-                    ستۆدیۆیا دیزاینا پەرتووکێ و بەرگی و رەنگێن فۆنتان — {activeBook.title}
-                  </span>
-                </div>
-
-                {/* Page Selector for Live Preview */}
-                <div className="flex items-center gap-1 bg-slate-800 px-2.5 py-1 rounded-lg text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setCurrentPage(1)}
-                    className={`px-2 py-0.5 rounded text-[11px] font-bold cursor-pointer ${
-                      currentPage === 1
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    بەرگ (ل ١)
-                  </button>
-                  <button
-                    type="button"
-                    disabled={currentPage <= 1}
-                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                    className="p-1 text-slate-300 hover:text-white disabled:opacity-40 cursor-pointer"
-                  >
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                  <span className="text-slate-300 tabular-nums">
-                    لاپەر {toEasternArabicNumerals(currentPage)} / {toEasternArabicNumerals(maxPageCount)}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={currentPage >= maxPageCount}
-                    onClick={() => setCurrentPage((p) => Math.min(maxPageCount, p + 1))}
-                    className="p-1 text-slate-300 hover:text-white disabled:opacity-40 cursor-pointer"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                  </button>
+          {/* Left/Main Studio Panel (7 cols on desktop): Unified All-in-One AI Bot Studio */}
+          <div className="lg:col-span-7 bg-white border border-slate-200/80 rounded-2xl shadow-[0_12px_40px_rgba(15,23,42,0.05)] flex flex-col overflow-hidden min-h-[600px]">
+            {/* Clean White & Royal Blue Studio Header (Replaces cramped dark multi-tab header) */}
+            <div className="px-4 sm:px-6 py-4 bg-white border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <span className="w-10 h-10 rounded-xl bg-[#EFF6FF] text-[#2563EB] border border-[#DCE7FF] flex items-center justify-center shrink-0 mt-0.5">
+                  <Sparkles className="w-5 h-5" />
+                </span>
+                <div className="min-w-0 space-y-1">
+                  <h2 className="font-heading text-xs sm:text-sm font-extrabold text-slate-900">
+                    ڕۆبۆتێ زیرەک یێ دیزاینکرن و رێکخستنا پەرتووکێ (AI)
+                  </h2>
+                  <p className="font-subtext text-xs text-slate-500 truncate">
+                    {activeBook.title}
+                  </p>
                 </div>
               </div>
 
-              {/* 4 Sub-Tabs */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-slate-800/90 p-1 rounded-xl">
-                {[
-                  { id: 'bot' as const, label: '١. ڕۆبۆتێ دیزاینێ' },
-                  { id: 'colors' as const, label: '٢. رەنگێن فۆنتان (١/٢/٣)' },
-                  { id: 'cover' as const, label: '٣. دیزاینا بەرگی' },
-                  { id: 'interior' as const, label: '٤. قاڵبێن ناڤەڕۆکێ' },
-                ].map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setDesignSubTab(tab.id)}
-                    className={`py-2 px-2.5 text-xs font-bold rounded-lg transition-all cursor-pointer text-center ${
-                      designSubTab === tab.id
-                        ? 'bg-[#2563EB] text-white shadow-2xs'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
+              {/* Page Selector for Live Preview */}
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2.5 py-1.5 rounded-xl text-xs shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage(1)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-heading font-bold cursor-pointer transition-colors ${
+                    currentPage === 1
+                      ? 'bg-[#2563EB] text-white'
+                      : 'text-slate-600 hover:bg-slate-200/70'
+                  }`}
+                >
+                  لاپەر ١
+                </button>
+                <button
+                  type="button"
+                  disabled={currentPage <= 1}
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  className="p-1 text-slate-600 hover:text-slate-900 disabled:opacity-40 cursor-pointer"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <span className="font-subtext text-slate-700 font-bold tabular-nums px-1">
+                  لاپەر {toEasternArabicNumerals(currentPage)} / {toEasternArabicNumerals(maxPageCount)}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPage >= maxPageCount}
+                  onClick={() => setCurrentPage((p) => Math.min(maxPageCount, p + 1))}
+                  className="p-1 text-slate-600 hover:text-slate-900 disabled:opacity-40 cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
 
             {editorStatusBanner && (
-              <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-xs flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 font-semibold">
-                  <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <div className="px-4 py-2.5 bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-subtext font-bold">
+                  <Check className="w-4 h-4 text-emerald-600 shrink-0" />
                   <span>{editorStatusBanner}</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setEditorStatusBanner(null)}
-                  className="text-emerald-700 hover:text-emerald-950 text-[11px] cursor-pointer"
+                  className="text-emerald-700 hover:text-emerald-950 text-[11px] font-heading cursor-pointer shrink-0"
                 >
                   داخستن
                 </button>
               </div>
             )}
 
-            {/* ===============================================================
-                SUB-TAB 1: AI DESIGN STUDIO BOT ("ڕۆبۆتێ دیزاینکرنا پەرتووکێ و بەرگی")
-               =============================================================== */}
-            {designSubTab === 'bot' && (
-              <>
-                {/* 1-Click Ready Prompts for Book, Cover & 1/2/3-Color Font Design */}
-                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200/80 space-y-2">
-                  <div className="text-[11px] font-bold text-slate-600">
-                    داخوازیا خۆ بێژە ڕۆبۆتی یان کلیک ل سەر ئێک ژ ڤان دیزاینان بکە:
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      disabled={isChatLoading}
-                      onClick={() =>
-                        handleSendChatMessage(
-                          undefined,
-                          'فۆنتێن پەرتووکێ بکە ٣ رەنگ: سەردێڕ ب رەنگێ سۆرێ یاقووتی، ئایەت و فەرموودە ب رەنگێ کەسکێ زومرودی، و شڕۆڤە ب رەنگێ رەش.'
-                        )
-                      }
-                      className="px-3 py-1.5 text-[11px] font-bold bg-white hover:bg-blue-50 text-slate-800 border border-slate-200 rounded-lg transition-colors cursor-pointer"
-                    >
-                      🎨 فۆنتان بکە ٣ رەنگ (سۆر + کەسک + رەش)
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isChatLoading}
-                      onClick={() =>
-                        handleSendChatMessage(
-                          undefined,
-                          'فۆنتێن پەرتووکێ بکە ٢ رەنگ: سەردێڕ و ئایەت ب رەنگێ سۆر (#CC0000) و شڕۆڤە ب رەنگێ رەش.'
-                        )
-                      }
-                      className="px-3 py-1.5 text-[11px] font-bold bg-white hover:bg-blue-50 text-slate-800 border border-slate-200 rounded-lg transition-colors cursor-pointer"
-                    >
-                      🎨 فۆنتان بکە ٢ رەنگ (سۆر و رەش)
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isChatLoading}
-                      onClick={() =>
-                        handleSendChatMessage(
-                          undefined,
-                          'فۆنتێن پەرتووکێ بکە ١ رەنگ (هەمی نڤیسین ب ئێک رەنگێ رەشێ کلاسیکی بیت).'
-                        )
-                      }
-                      className="px-3 py-1.5 text-[11px] font-bold bg-white hover:bg-blue-50 text-slate-800 border border-slate-200 rounded-lg transition-colors cursor-pointer"
-                    >
-                      🎨 فۆنتان بکە ١ رەنگ
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isChatLoading}
-                      onClick={() => {
-                        handleEnsureCoverOnPage1();
-                        void handleSendChatMessage(
-                          undefined,
-                          'بەرگەکێ شاهانە یێ کەسکێ تۆخ و زێڕین ب شێوازێ میحرابا ئیسلامی (islamic-arch) بۆ پەرتووکێ چێکە و چوارچووڤێ ناڤەڕۆکێ ژی بکە میحرابا ئیسلامی.'
-                        );
-                      }}
-                      className="px-3 py-1.5 text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 rounded-lg transition-colors cursor-pointer"
-                    >
-                      🕌 دیزاین و بەرگێ میحرابا کەسک و زێڕین
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isChatLoading}
-                      onClick={() => {
-                        handleEnsureCoverOnPage1();
-                        void handleSendChatMessage(
-                          undefined,
-                          'دیزاینا شاهانە یا شین و زێڕین (royal-frame) بۆ بەرگی و ناڤەڕۆکا پەرتووکێ چێکە ب ٣ رەنگێن فۆنتان.'
-                        );
-                      }}
-                      className="px-3 py-1.5 text-[11px] font-bold bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg transition-colors cursor-pointer"
-                    >
-                      👑 دیزاینا شاهانە یا شین و زێڕین
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isChatLoading}
-                      onClick={() => chatImageInputRef.current?.click()}
-                      className="px-3 py-1.5 text-[11px] font-bold bg-blue-50 hover:bg-blue-100 text-[#1D4ED8] border border-blue-200 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>📷 هنارتنا وێنەیێ دیزاینێ بۆ ڕۆبۆتی</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Chat Messages History */}
+            {/* Chat Messages History */}
+            <div
+              ref={chatScrollRef}
+              className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3.5 bg-slate-50/40 max-h-[480px]"
+            >
+              {chatMessages.map((msg) => (
                 <div
-                  ref={chatScrollRef}
-                  className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3 bg-slate-50/50 max-h-[390px]"
+                  key={msg.id}
+                  className={`flex flex-col ${
+                    msg.role === 'user' ? 'items-start' : 'items-end'
+                  }`}
                 >
-                  {chatMessages.map((msg) => (
-                    <div
-                      key={msg.id}
-                      className={`flex flex-col ${
-                        msg.role === 'user' ? 'items-start' : 'items-end'
-                      }`}
-                    >
-                      <div
-                        className={`max-w-[88%] rounded-2xl px-4 py-3 text-xs leading-relaxed space-y-2 ${
-                          msg.role === 'user'
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-white border border-slate-200 text-slate-800 shadow-2xs'
-                        }`}
-                      >
-                        {msg.imageDataUrl && (
-                          <div className="rounded-xl overflow-hidden border border-white/20 bg-black/20 max-w-[220px]">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={msg.imageDataUrl}
-                              alt={msg.imageName || 'وێنەیێ دیزاینێ'}
-                              className="w-full max-h-44 object-contain"
-                            />
-                            {msg.imageName && (
-                              <div className="px-2.5 py-1 text-[10px] text-slate-300 truncate bg-black/40">
-                                {msg.imageName}
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        <div>{msg.text}</div>
-
-                        {msg.didUpdateDesign && msg.previousDesignSnapshot && (
-                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-                            <span className="text-[11px] text-emerald-700 font-bold flex items-center gap-1">
-                              <Check className="w-3 h-3" />
-                              <span>دیزاین و رەنگ هاتنە جێبەجێکرن</span>
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handleUndoChatDesign(msg)}
-                              className="text-[11px] text-slate-500 hover:text-slate-900 flex items-center gap-1 underline cursor-pointer"
-                            >
-                              <RotateCcw className="w-3 h-3" />
-                              <span>زڤڕاندن</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-
-                  {isChatLoading && (
-                    <div className="flex items-center gap-2 text-xs text-[#2563EB] font-bold px-3 py-2 bg-blue-50 rounded-xl w-fit border border-blue-200">
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#2563EB]" />
-                      <span>ڕۆبۆت یێ دیزاینا پەرتووکێ و بەرگی و رەنگان رێکدئێخیت...</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Attached Design Reference Image Preview Bar */}
-                {chatImageDataUrl && (
-                  <div className="px-4 py-2.5 bg-blue-50/90 border-t border-blue-200 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={chatImageDataUrl}
-                        alt="Preview"
-                        className="w-11 h-11 rounded-lg object-cover border border-blue-300 bg-white shrink-0"
-                      />
-                      <div className="min-w-0">
-                        <div className="text-xs font-extrabold text-[#1E3A8A] truncate">
-                          وێنەیێ نموونەیا دیزاینێ ئامادەیە ({chatImageName || 'وێنە'})
-                        </div>
-                        <div className="text-[11px] text-slate-600">
-                          کلیک ل سەر «جێبەجێکە» بکە دا ڕۆبۆت دیزاین و رەنگان رێک وەکی ڤی وێنەی چێکەت
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setChatImageDataUrl(null);
-                        setChatImageName('');
-                      }}
-                      className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-slate-500 hover:text-red-600 border border-slate-200 cursor-pointer shrink-0"
-                      title="ژێبرنا وێنەی"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {/* Bot Input Form (Supports Text + Image Upload / Paste) */}
-                <form
-                  onSubmit={(e) => handleSendChatMessage(e)}
-                  className="p-3.5 bg-white border-t border-slate-200 flex items-center gap-2"
-                >
-                  <input
-                    ref={chatImageInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleSelectChatDesignImage}
-                    className="hidden"
-                  />
-                  <button
-                    type="button"
-                    disabled={isChatLoading}
-                    onClick={() => chatImageInputRef.current?.click()}
-                    title="هنارتنا وێنەیێ دیزاینێ بۆ ڕۆبۆتی"
-                    className={`px-3 py-2.5 text-xs font-bold rounded-xl border transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
-                      chatImageDataUrl
-                        ? 'bg-[#EFF6FF] text-[#1D4ED8] border-[#2563EB]'
-                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                  <div
+                    className={`max-w-[88%] rounded-2xl px-4 py-3.5 text-[13px] font-subtext space-y-2.5 ${
+                      msg.role === 'user'
+                        ? 'bg-[#1E3A8A] text-white'
+                        : 'bg-white border border-slate-200/90 text-slate-800 shadow-2xs'
                     }`}
                   >
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>وێنە</span>
-                  </button>
-                  <input
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onPaste={handlePasteChatImage}
-                    placeholder="بێژە ڕۆبۆتی چ دیزاین چێکەت، یان وێنەیێ دیزاینەکێ بهنێرە دا وەکی وێ چێکەت..."
-                    className="flex-1 px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={isChatLoading || (!chatInput.trim() && !chatImageDataUrl)}
-                    className="px-4 py-2.5 text-xs font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>جێبەجێکە</span>
-                  </button>
-                </form>
-              </>
-            )}
-
-            {/* ===============================================================
-                SUB-TAB 2: 1-COLOR, 2-COLOR, AND 3-COLOR FONT SYSTEM
-                ("سیستەمێ رەنگێن فۆنتان: ١ رەنگ، ٢ رەنگ، ٣ رەنگ")
-               =============================================================== */}
-            {designSubTab === 'colors' && (
-              <div className="flex-1 overflow-y-auto p-5 space-y-6">
-                {/* Step 1: Select 1, 2, or 3 Colors */}
-                <div className="space-y-2.5">
-                  <label className="block text-xs sm:text-sm font-extrabold text-slate-900">
-                    ١. هژمارا رەنگێن فۆنتان د ناڤ پەرتووکێ دا هەلبژێرە (١ رەنگ، ٢ رەنگ، یان ٣ رەنگ):
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {[
-                      {
-                        count: 1 as const,
-                        title: '١ رەنگ (ئێک رەنگ)',
-                        desc: 'هەمی نڤیسینا پەرتووکێ (سەردێڕ، ئایەت و شڕۆڤە) ب ئێک رەنگ دەردکەڤیت.',
-                      },
-                      {
-                        count: 2 as const,
-                        title: '٢ رەنگ (دوو رەنگ)',
-                        desc: 'رەنگێ ١ بۆ سەردێڕ و ئایەتان، و رەنگێ ٢ بۆ نڤیسینا شڕۆڤێ.',
-                      },
-                      {
-                        count: 3 as const,
-                        title: '٣ رەنگ (سێ رەنگ)',
-                        desc: 'رەنگێ ١ بۆ سەردێڕان، رەنگێ ٢ بۆ ئایەت و فەرموودەیان، رەنگێ ٣ بۆ شڕۆڤێ.',
-                      },
-                    ].map((opt) => {
-                      const active = activeBookDesign.fontColorCount === opt.count;
-                      return (
-                        <button
-                          key={opt.count}
-                          type="button"
-                          onClick={() =>
-                            updateActiveBookDesign((prev) => ({
-                              ...prev,
-                              fontColorCount: opt.count,
-                            }))
-                          }
-                          className={`p-3.5 rounded-xl border text-right transition-all cursor-pointer flex flex-col gap-1 ${
-                            active
-                              ? 'bg-[#EFF6FF] border-[#2563EB] ring-1 ring-[#2563EB]'
-                              : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-extrabold text-slate-900">
-                              {opt.title}
-                            </span>
-                            {active && <Check className="w-4 h-4 text-[#2563EB]" />}
+                    {msg.imageDataUrl && (
+                      <div className="rounded-xl overflow-hidden border border-white/20 bg-black/20 max-w-[230px]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={msg.imageDataUrl}
+                          alt={msg.imageName || 'وێنەیێ دیزاینێ'}
+                          className="w-full max-h-44 object-contain"
+                        />
+                        {msg.imageName && (
+                          <div className="px-2.5 py-1 text-[10px] text-slate-200 truncate bg-black/40">
+                            {msg.imageName}
                           </div>
-                          <p className="text-[11px] text-slate-600 leading-relaxed">{opt.desc}</p>
-                        </button>
-                      );
-                    })}
+                        )}
+                      </div>
+                    )}
+
+                    <p className="font-subtext">{msg.text}</p>
+
+                    {msg.didUpdateDesign &&
+                      (msg.previousDesignSnapshot || msg.previousPagesSnapshot) && (
+                        <div className="mt-2 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-3">
+                          <span className="text-[11px] font-heading text-emerald-700 font-bold flex items-center gap-1">
+                            <Check className="w-3.5 h-3.5" />
+                            <span>ب سەرکەفتیانە هاتە جێبەجێکرن</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleUndoChatDesign(msg)}
+                            className="text-[11px] font-heading text-slate-500 hover:text-slate-900 flex items-center gap-1 underline cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>زڤڕاندن</span>
+                          </button>
+                        </div>
+                      )}
                   </div>
                 </div>
+              ))}
 
-                {/* Step 2: Customize each active color slot */}
-                <div className="space-y-4 pt-2 border-t border-slate-200">
-                  <div className="text-xs sm:text-sm font-extrabold text-slate-900">
-                    ٢. رەنگێن فۆنتان ب دلێ خۆ دیار بکە:
-                  </div>
-
-                  {/* Color Slot: Heading & Accent Color (Shown when 2 or 3 colors) */}
-                  {activeBookDesign.fontColorCount >= 2 && (
-                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-slate-800">
-                          {activeBookDesign.fontColorCount === 2
-                            ? 'رەنگێ ١: سەردێڕ و ئایەت و فەرموودە'
-                            : 'رەنگێ ١: سەردێڕ و بابەتێن سەرەکی'}
-                        </span>
-                        <input
-                          type="color"
-                          value={activeBookDesign.headingColor}
-                          onChange={(e) =>
-                            updateActiveBookDesign((prev) => ({
-                              ...prev,
-                              headingColor: e.target.value,
-                            }))
-                          }
-                          className="w-9 h-7 rounded cursor-pointer border border-slate-300"
-                        />
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {[
-                          { label: 'سۆرێ کلاسیکی', hex: '#CC0000' },
-                          { label: 'سۆرێ یاقووتی', hex: '#991B1B' },
-                          { label: 'شینێ شاهانە', hex: '#1E3A8A' },
-                          { label: 'کەسکێ ئیسلامی', hex: '#065F46' },
-                          { label: 'قاوەییێ دەستنڤیس', hex: '#7C2D12' },
-                          { label: 'مۆرێ زانستی', hex: '#581C87' },
-                          { label: 'زێڕینێ تۆخ', hex: '#92400E' },
-                        ].map((sw) => (
-                          <button
-                            key={sw.hex}
-                            type="button"
-                            onClick={() =>
-                              updateActiveBookDesign((prev) => ({
-                                ...prev,
-                                headingColor: sw.hex,
-                              }))
-                            }
-                            className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer"
-                          >
-                            <span
-                              className="w-3 h-3 rounded-full shrink-0"
-                              style={{ backgroundColor: sw.hex }}
-                            />
-                            <span>{sw.label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Color Slot: Quranic Verses ﴿...﴾ & Hadith Highlights (Shown when 3 colors) */}
-                  {activeBookDesign.fontColorCount === 3 && (
-                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-slate-800">
-                          رەنگێ ٢: ئایەتێن قورئانێ ﴿...﴾ و فەرموودە و مەتنێن عەرەبی
-                        </span>
-                        <input
-                          type="color"
-                          value={activeBookDesign.verseColor}
-                          onChange={(e) =>
-                            updateActiveBookDesign((prev) => ({
-                              ...prev,
-                              verseColor: e.target.value,
-                            }))
-                          }
-                          className="w-9 h-7 rounded cursor-pointer border border-slate-300"
-                        />
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {[
-                          { label: 'کەسکێ قورئانی', hex: '#065F46' },
-                          { label: 'سۆرێ کلاسیکی', hex: '#CC0000' },
-                          { label: 'شینێ ئاسمانی', hex: '#0F4C81' },
-                          { label: 'زێڕینێ قاوەیی', hex: '#9A3412' },
-                          { label: 'مۆرێ تۆخ', hex: '#6B21A8' },
-                          { label: 'فیرۆزی', hex: '#0F766E' },
-                        ].map((sw) => (
-                          <button
-                            key={sw.hex}
-                            type="button"
-                            onClick={() =>
-                              updateActiveBookDesign((prev) => ({
-                                ...prev,
-                                verseColor: sw.hex,
-                              }))
-                            }
-                            className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer"
-                          >
-                            <span
-                              className="w-3 h-3 rounded-full shrink-0"
-                              style={{ backgroundColor: sw.hex }}
-                            />
-                            <span>{sw.label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Color Slot: Main Body Text (Always shown) */}
-                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-slate-800">
-                        {activeBookDesign.fontColorCount === 1
-                          ? 'رەنگێ گشتی یێ هەمی نڤیسینێن پەرتووکێ (١ رەنگ)'
-                          : activeBookDesign.fontColorCount === 2
-                          ? 'رەنگێ ٢: نڤیسینا سەرەکی و شڕۆڤەیا پەرتووکێ'
-                          : 'رەنگێ ٣: نڤیسینا سەرەکی و شڕۆڤەیا پەرتووکێ'}
-                      </span>
-                      <input
-                        type="color"
-                        value={activeBookDesign.bodyColor}
-                        onChange={(e) =>
-                          updateActiveBookDesign((prev) => ({
-                            ...prev,
-                            bodyColor: e.target.value,
-                          }))
-                        }
-                        className="w-9 h-7 rounded cursor-pointer border border-slate-300"
-                      />
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        { label: 'رەشێ تەمام', hex: '#111111' },
-                        { label: 'حوبری (شینێ تۆخ)', hex: '#0F172A' },
-                        { label: 'قاوەییێ تۆخ', hex: '#1C1917' },
-                        { label: 'کەسکێ تۆخێ زانستی', hex: '#064E3B' },
-                        { label: 'خۆلەمێشیێ تۆخ', hex: '#27272A' },
-                      ].map((sw) => (
-                        <button
-                          key={sw.hex}
-                          type="button"
-                          onClick={() =>
-                            updateActiveBookDesign((prev) => ({
-                              ...prev,
-                              bodyColor: sw.hex,
-                            }))
-                          }
-                          className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <span
-                            className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: sw.hex }}
-                          />
-                          <span>{sw.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+              {isChatLoading && (
+                <div className="flex items-center gap-2.5 text-xs text-[#2563EB] font-heading font-bold px-3.5 py-2.5 bg-blue-50 rounded-xl w-fit border border-blue-200">
+                  <RefreshCw className="w-4 h-4 animate-spin text-[#2563EB]" />
+                  <span>ڕۆبۆت یێ داخازا تە جێبەجێ دکەت...</span>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
-            {/* ===============================================================
-                SUB-TAB 3: BOOK COVER DESIGNER ("دیزاینا بەرگێ پەرتووکێ - Cover")
-               =============================================================== */}
-            {designSubTab === 'cover' && (
-              <div className="flex-1 overflow-y-auto p-5 space-y-5">
-                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200">
-                  <div>
-                    <div className="text-xs sm:text-sm font-extrabold text-slate-900">
-                      دیزاینکرنا بەرگێ پەرتووکێ (لاپەرێ ١)
+            {/* Attached Design Reference Image Preview Bar */}
+            {chatImageDataUrl && (
+              <div className="px-4 py-3 bg-blue-50/90 border-t border-blue-200 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={chatImageDataUrl}
+                    alt="Preview"
+                    className="w-12 h-12 rounded-xl object-cover border border-blue-300 bg-white shrink-0"
+                  />
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="text-xs font-heading font-extrabold text-[#1E3A8A] truncate">
+                      وێنە ئامادەیە ({chatImageName || 'وێنە'})
                     </div>
-                    <p className="text-[11px] text-slate-500">
-                      شێواز و رەنگ و نڤیسینێن بەرگێ پەرتووکێ ب دلێ خۆ رێکبێخە
+                    <p className="text-[11px] font-subtext text-slate-600">
+                      بنڤیسە کا تە چ ژ ڤی وێنەی دڤێت یان ئێکسەر کلیک ل سەر «جێبەجێکە» بکە
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleEnsureCoverOnPage1}
-                    className="px-3.5 py-1.5 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold cursor-pointer"
-                  >
-                    پیشاندانا بەرگی ل لاپەرێ ١
-                  </button>
                 </div>
-
-                {/* Cover Architectural Style Picker */}
-                <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-800">
-                    ١. شێوازێ چوارچووڤە و نەخشێ بەرگی:
-                  </label>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                    {[
-                      { id: 'classic-manuscript' as const, label: 'دەستنڤیسێ کلاسیکی' },
-                      { id: 'royal-frame' as const, label: 'چوارچووڤێ شاهانە' },
-                      { id: 'islamic-arch' as const, label: 'میحرابا ئیسلامی' },
-                      { id: 'modern-band' as const, label: 'مۆدێرن و رێکخستی' },
-                    ].map((st) => (
-                      <button
-                        key={st.id}
-                        type="button"
-                        onClick={() => {
-                          handleEnsureCoverOnPage1();
-                          updateActiveBookDesign((prev) => ({
-                            ...prev,
-                            cover: { ...prev.cover, style: st.id },
-                          }));
-                        }}
-                        className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                          activeBookDesign.cover.style === st.id
-                            ? 'bg-[#EFF6FF] border-[#2563EB] text-[#1E3A8A]'
-                            : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                        }`}
-                      >
-                        {st.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Ready-Made Cover Color Palettes */}
-                <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-800">
-                    ٢. رەنگێن ئامادەکری بۆ بەرگێ پەرتووکێ:
-                  </label>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                    {[
-                      {
-                        name: 'کرێمی و سۆرێ کلاسیکی',
-                        bgColor: '#FFFFFF',
-                        borderColor: '#111111',
-                        accentColor: '#CC0000',
-                        titleColor: '#CC0000',
-                        textColor: '#111111',
-                      },
-                      {
-                        name: 'کەسکێ زومرودی و زێڕین',
-                        bgColor: '#063E2E',
-                        borderColor: '#D4AF37',
-                        accentColor: '#F59E0B',
-                        titleColor: '#FEF3C7',
-                        textColor: '#ECFDF5',
-                      },
-                      {
-                        name: 'شینێ شاهانە و زێڕین',
-                        bgColor: '#0F2547',
-                        borderColor: '#D4AF37',
-                        accentColor: '#FBBF24',
-                        titleColor: '#FFFFFF',
-                        textColor: '#E2E8F0',
-                      },
-                      {
-                        name: 'یاقووتیێ تۆخ و زێڕین',
-                        bgColor: '#4C0519',
-                        borderColor: '#F59E0B',
-                        accentColor: '#FDE68A',
-                        titleColor: '#FFFBEB',
-                        textColor: '#FFE4E6',
-                      },
-                      {
-                        name: 'دەستنڤیسێ کەڤنار (شاموا)',
-                        bgColor: '#FBF6EC',
-                        borderColor: '#7C2D12',
-                        accentColor: '#B45309',
-                        titleColor: '#7C2D12',
-                        textColor: '#292524',
-                      },
-                      {
-                        name: 'ڕەشێ فەخیم و زێڕین',
-                        bgColor: '#141417',
-                        borderColor: '#D4AF37',
-                        accentColor: '#F59E0B',
-                        titleColor: '#FDE68A',
-                        textColor: '#E4E4E7',
-                      },
-                    ].map((pal) => (
-                      <button
-                        key={pal.name}
-                        type="button"
-                        onClick={() => {
-                          handleEnsureCoverOnPage1();
-                          updateActiveBookDesign((prev) => ({
-                            ...prev,
-                            cover: {
-                              ...prev.cover,
-                              bgColor: pal.bgColor,
-                              borderColor: pal.borderColor,
-                              accentColor: pal.accentColor,
-                              titleColor: pal.titleColor,
-                              textColor: pal.textColor,
-                            },
-                          }));
-                        }}
-                        className="p-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 flex items-center gap-2 text-right cursor-pointer"
-                      >
-                        <span
-                          className="w-6 h-6 rounded-lg border shrink-0 flex items-center justify-center"
-                          style={{
-                            backgroundColor: pal.bgColor,
-                            borderColor: pal.borderColor,
-                          }}
-                        >
-                          <span
-                            className="w-2.5 h-2.5 rounded-full"
-                            style={{ backgroundColor: pal.titleColor }}
-                          />
-                        </span>
-                        <span className="text-[11px] font-bold text-slate-800 truncate">
-                          {pal.name}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Custom Cover Color Pickers */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
-                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-slate-700">تەختێ بەرگی</span>
-                    <input
-                      type="color"
-                      value={activeBookDesign.cover.bgColor}
-                      onChange={(e) =>
-                        updateActiveBookDesign((prev) => ({
-                          ...prev,
-                          cover: { ...prev.cover, bgColor: e.target.value },
-                        }))
-                      }
-                      className="w-7 h-6 rounded cursor-pointer"
-                    />
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-slate-700">چوارچووڤە</span>
-                    <input
-                      type="color"
-                      value={activeBookDesign.cover.borderColor || activeBookDesign.cover.accentColor}
-                      onChange={(e) =>
-                        updateActiveBookDesign((prev) => ({
-                          ...prev,
-                          cover: {
-                            ...prev.cover,
-                            borderColor: e.target.value,
-                            accentColor: e.target.value,
-                          },
-                        }))
-                      }
-                      className="w-7 h-6 rounded cursor-pointer"
-                    />
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-slate-700">ناڤونیشان</span>
-                    <input
-                      type="color"
-                      value={activeBookDesign.cover.titleColor}
-                      onChange={(e) =>
-                        updateActiveBookDesign((prev) => ({
-                          ...prev,
-                          cover: { ...prev.cover, titleColor: e.target.value },
-                        }))
-                      }
-                      className="w-7 h-6 rounded cursor-pointer"
-                    />
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-slate-700">نڤیسینا دی</span>
-                    <input
-                      type="color"
-                      value={activeBookDesign.cover.textColor}
-                      onChange={(e) =>
-                        updateActiveBookDesign((prev) => ({
-                          ...prev,
-                          cover: { ...prev.cover, textColor: e.target.value },
-                        }))
-                      }
-                      className="w-7 h-6 rounded cursor-pointer"
-                    />
-                  </div>
-                </div>
-
-                {/* Cover Text Editor */}
-                {pages[0]?.blocks.map((block, bIdx) => {
-                  if (block.type !== 'cover') return null;
-                  return (
-                    <div
-                      key={bIdx}
-                      className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs"
-                    >
-                      <div className="font-extrabold text-slate-800">
-                        ٣. نڤیسینێن ل سەر بەرگێ پەرتووکێ:
-                      </div>
-                      <div>
-                        <label className="block text-slate-600 mb-1">دەستپێکا سەری:</label>
-                        <input
-                          type="text"
-                          value={block.kicker}
-                          onChange={(e) => updateCoverField(1, bIdx, 'kicker', e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-600 mb-1">
-                          ناڤونیشانێ سەرەکی یێ پەرتووکێ:
-                        </label>
-                        <textarea
-                          rows={2}
-                          value={block.titleLines.join('\n')}
-                          onChange={(e) => updateCoverField(1, bIdx, 'titleLines', e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg font-bold"
-                        />
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        <div>
-                          <label className="block text-slate-600 mb-1">ناڤونیشانێ دانەری:</label>
-                          <input
-                            type="text"
-                            value={block.compilerLabel || ''}
-                            onChange={(e) =>
-                              updateCoverField(1, bIdx, 'compilerLabel', e.target.value)
-                            }
-                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-slate-600 mb-1">ناڤێ مامۆستای / دانەری:</label>
-                          <input
-                            type="text"
-                            value={block.compilerName || ''}
-                            onChange={(e) =>
-                              updateCoverField(1, bIdx, 'compilerName', e.target.value)
-                            }
-                            className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-slate-600 mb-1">ئایەت یان نڤیسینا خوارێ:</label>
-                        <textarea
-                          rows={2}
-                          value={block.verse}
-                          onChange={(e) => updateCoverField(1, bIdx, 'verse', e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg"
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChatImageDataUrl(null);
+                    setChatImageName('');
+                  }}
+                  className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-slate-500 hover:text-red-600 border border-slate-200 cursor-pointer shrink-0"
+                  title="ژێبرنا وێنەی"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
             )}
 
-            {/* ===============================================================
-                SUB-TAB 4: READY-MADE BOOK DESIGN PRESETS & INTERIOR FRAMES
-                ("دیزاینێن ئامادەکری و چوارچووڤێ ناڤەڕۆکێ")
-               =============================================================== */}
-            {designSubTab === 'interior' && (
-              <div className="flex-1 overflow-y-auto p-5 space-y-6">
-                {/* 6 Complete Ready-Made Book Design Themes */}
-                <div className="space-y-2.5">
-                  <label className="block text-xs sm:text-sm font-extrabold text-slate-900">
-                    ١. قاڵب و دیزاینێن ئامادەکری بۆ هەمی پەرتووکێ:
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {BOOK_DESIGN_PRESETS.map((preset) => {
-                      const isCurrent = activeBookDesign.presetId === preset.presetId;
-                      const eff = resolveEffectiveColors(preset);
-                      return (
-                        <button
-                          key={preset.presetId}
-                          type="button"
-                          onClick={() => updateActiveBookDesign(preset)}
-                          className={`p-3.5 rounded-xl border text-right transition-all cursor-pointer flex flex-col justify-between gap-2 ${
-                            isCurrent
-                              ? 'bg-[#EFF6FF] border-[#2563EB] ring-1 ring-[#2563EB]'
-                              : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-extrabold text-slate-900">
-                              {preset.nameKurdish}
-                            </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <span
-                                className="w-3.5 h-3.5 rounded-full border border-black/15"
-                                style={{ backgroundColor: eff.heading }}
-                              />
-                              <span
-                                className="w-3.5 h-3.5 rounded-full border border-black/15"
-                                style={{ backgroundColor: eff.verse }}
-                              />
-                              <span
-                                className="w-3.5 h-3.5 rounded-full border border-black/15"
-                                style={{ backgroundColor: eff.body }}
-                              />
-                            </div>
-                          </div>
-                          <p className="text-[11px] text-slate-600 leading-relaxed">
-                            {preset.descriptionKurdish}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Interior Page Frame Style */}
-                <div className="space-y-2.5 pt-2 border-t border-slate-200">
-                  <label className="block text-xs font-bold text-slate-800">
-                    ٢. شێوازێ چوارچووڤێ لاپەرێن ناڤەڕۆکێ:
-                  </label>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                    {[
-                      { id: 'classic-scholarly' as const, label: 'زانستی یێ کلاسیکی' },
-                      { id: 'royal-manuscript' as const, label: 'دەستنڤیسێ شاهانە' },
-                      { id: 'islamic-mihrab' as const, label: 'میحرابا ئیسلامی' },
-                      { id: 'ottoman-diwan' as const, label: 'دیوانا عوسمانی' },
-                      { id: 'academic-boxed' as const, label: 'چوارچووڤێ ئەکادیمی' },
-                      { id: 'modern-clean' as const, label: 'مۆدێرن و سادە' },
-                    ].map((fr) => (
-                      <button
-                        key={fr.id}
-                        type="button"
-                        onClick={() =>
-                          updateActiveBookDesign((prev) => ({
-                            ...prev,
-                            frameStyle: fr.id,
-                          }))
-                        }
-                        className={`p-2.5 rounded-xl border text-xs font-bold cursor-pointer ${
-                          activeBookDesign.frameStyle === fr.id
-                            ? 'bg-[#EFF6FF] border-[#2563EB] text-[#1E3A8A]'
-                            : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                        }`}
-                      >
-                        {fr.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Paper Background Tint & Boxed Headings Toggle */}
-                <div className="space-y-3 pt-2 border-t border-slate-200">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-slate-800">
-                      ٣. رەنگێ کاغەزا لاپەرێن پەرتووکێ:
-                    </span>
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        { label: 'سپی (Pure White)', hex: '#FFFFFF' },
-                        { label: 'شاموا یێ نەرم', hex: '#FFFDF8' },
-                        { label: 'کەڤنار (Warm Cream)', hex: '#FAF6EE' },
-                        { label: 'کەسکێ گەلەک نەرم', hex: '#F7FCF9' },
-                        { label: 'شینێ گەلەک نەرم', hex: '#F8FAFC' },
-                      ].map((p) => (
-                        <button
-                          key={p.hex}
-                          type="button"
-                          onClick={() =>
-                            updateActiveBookDesign((prev) => ({
-                              ...prev,
-                              paperColor: p.hex,
-                            }))
-                          }
-                          className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                            activeBookDesign.paperColor === p.hex
-                              ? 'border-[#2563EB] bg-blue-50 text-[#1E3A8A]'
-                              : 'border-slate-200 bg-white text-slate-700'
-                          }`}
-                        >
-                          <span
-                            className="w-3.5 h-3.5 rounded border border-slate-300"
-                            style={{ backgroundColor: p.hex }}
-                          />
-                          <span>{p.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
-                    <span className="text-xs font-bold text-slate-800">
-                      سەردێڕێن بەشان د ناڤ چوارچووڤەکێ رەنگدار دا بن:
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateActiveBookDesign((prev) => ({
-                          ...prev,
-                          headingBoxed: !prev.headingBoxed,
-                        }))
-                      }
-                      className={`px-3.5 py-1 rounded-lg text-xs font-bold cursor-pointer ${
-                        activeBookDesign.headingBoxed
-                          ? 'bg-[#2563EB] text-white'
-                          : 'bg-slate-200 text-slate-700'
-                      }`}
-                    >
-                      {activeBookDesign.headingBoxed ? 'چالاکە ✓' : 'نەچالاکە'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Bot Input Form (Supports Text + Image Upload / Paste) */}
+            <form
+              onSubmit={(e) => handleSendChatMessage(e)}
+              className="p-3.5 sm:p-4 bg-white border-t border-slate-200 flex items-center gap-2"
+            >
+              <input
+                ref={chatImageInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleSelectChatDesignImage}
+                className="hidden"
+              />
+              <button
+                type="button"
+                disabled={isChatLoading}
+                onClick={() => chatImageInputRef.current?.click()}
+                title="هنارتنا وێنەی بۆ ڕۆبۆتی"
+                className={`px-3.5 py-2.5 text-xs font-heading font-bold rounded-xl border transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                  chatImageDataUrl
+                    ? 'bg-[#EFF6FF] text-[#1D4ED8] border-[#2563EB]'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>وێنە</span>
+              </button>
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onPaste={handlePasteChatImage}
+                placeholder="بێژە ڕۆبۆتی چ بکەت (گوهۆڕینا رەنگان، سەرێ لاپەری، بەرگی، ژێبرنا لاپەری، یان وێنەیەکی بهنێرە)..."
+                className="flex-1 px-3.5 py-2.5 text-xs font-subtext bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
+              />
+              <button
+                type="submit"
+                disabled={isChatLoading || (!chatInput.trim() && !chatImageDataUrl)}
+                className="px-4 py-2.5 text-xs font-heading font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>جێبەجێکە</span>
+              </button>
+            </form>
           </div>
 
           {/* Right/Side Panel (5 cols on desktop): Live Interactive Preview of Book Page & Cover */}
           <div className="lg:col-span-5 flex flex-col items-center space-y-2.5">
-            <div className="w-full flex items-center justify-between px-2 text-xs font-bold text-slate-700">
+            <div className="w-full flex items-center justify-between px-2 text-xs font-heading font-bold text-slate-700">
               <span>
                 پێشبینینا راستەوخۆ — لاپەرێ {toEasternArabicNumerals(currentPage)} (
                 {toEasternArabicNumerals(activeBookDesign.fontColorCount)} رەنگ)
@@ -4973,7 +4750,7 @@ export default function BadiniBookTranslatorPage() {
               <button
                 type="button"
                 onClick={() => setEditingPageNumber(currentPage)}
-                className="text-[#2563EB] hover:underline font-bold cursor-pointer flex items-center gap-1"
+                className="text-[#2563EB] hover:underline font-heading font-bold cursor-pointer flex items-center gap-1"
               >
                 <Edit3 className="w-3.5 h-3.5" />
                 <span>دەستکاریا نڤیسینێ</span>

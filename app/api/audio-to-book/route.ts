@@ -6,9 +6,6 @@ import {
   runServerAudioToBookWorker,
   ServerAudioBookJob,
 } from '@/lib/server-audio-book-manager';
-import { SHAKHSIYA_QAWIYA_PAGES } from '@/lib/shakhsiya-qawiya-book';
-import { QAWAID_ARBA_LESSON1_PAGES } from '@/lib/qawaid-arba-lesson1-book';
-import { BookPageData } from '@/lib/book-types';
 import { sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
 
 export async function GET(req: NextRequest) {
@@ -26,22 +23,6 @@ export async function GET(req: NextRequest) {
 
   const jobs = Array.from(store.values()).sort((a, b) => b.updatedAt - a.updatedAt);
   return NextResponse.json({ jobs });
-}
-
-function adaptPreverifiedPages(
-  sourcePages: BookPageData[],
-  mode: 'new' | 'append',
-  startPageNumber: number
-): BookPageData[] {
-  if (mode === 'new') {
-    return sourcePages;
-  }
-  const contentOnly = sourcePages.filter((p) => !p.blocks.some((b) => b.type === 'cover'));
-  return contentOnly.map((p, idx) => ({
-    ...p,
-    pageNumber: startPageNumber + idx,
-    showHeader: true,
-  }));
 }
 
 export async function POST(req: NextRequest) {
@@ -161,84 +142,9 @@ export async function POST(req: NextRequest) {
     const now = Date.now();
     const jobId = `audio-job-${now}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Fast path for pre-verified full lectures if re-uploaded by name
-    const normalizedCheck = `${fileName} ${bookTitle} ${lessonTitle}`.toLowerCase();
-    if (
-      normalizedCheck.includes('الشخصية القوية') ||
-      normalizedCheck.includes('الشصیە القویە') ||
-      normalizedCheck.includes('الشخصيه القويه') ||
-      normalizedCheck.includes('0deb71fe')
-    ) {
-      const prePages = adaptPreverifiedPages(SHAKHSIYA_QAWIYA_PAGES, mode, startPageNumber);
-      const instantJob: ServerAudioBookJob = {
-        id: jobId,
-        bookTitle,
-        lessonTitle: lessonTitle || bookTitle,
-        speakerName,
-        mode,
-        startPageNumber,
-        fileName,
-        totalSegments: 8,
-        doneSegments: 8,
-        audioDurationSec: 3262,
-        estimatedTotalSec: 2,
-        startedAt: now,
-        updatedAt: now,
-        status: 'completed',
-        statusMessage: 'دەنگ ب تەمامی هاتە نڤیسین و رێکخستن (١٦ لاپەر)!',
-        pages: prePages,
-      };
-      jobStore.set(jobId, instantJob);
-      persistAudioJobsStore();
-      return NextResponse.json({
-        job: instantJob,
-        bookTitle,
-        lessonTitle: lessonTitle || bookTitle,
-        speakerName,
-        mode,
-        pages: prePages,
-      });
-    }
-
-    if (
-      normalizedCheck.includes('قواعد الاربع') ||
-      normalizedCheck.includes('القواعد الأربع') ||
-      normalizedCheck.includes('3a95a75b')
-    ) {
-      const prePages = adaptPreverifiedPages(QAWAID_ARBA_LESSON1_PAGES, mode, startPageNumber);
-      const instantJob: ServerAudioBookJob = {
-        id: jobId,
-        bookTitle,
-        lessonTitle: lessonTitle || bookTitle,
-        speakerName,
-        mode,
-        startPageNumber,
-        fileName,
-        totalSegments: 5,
-        doneSegments: 5,
-        audioDurationSec: 2080,
-        estimatedTotalSec: 2,
-        startedAt: now,
-        updatedAt: now,
-        status: 'completed',
-        statusMessage: 'دەنگ ب تەمامی هاتە نڤیسین و رێکخستن (١٠ لاپەر)!',
-        pages: prePages,
-      };
-      jobStore.set(jobId, instantJob);
-      persistAudioJobsStore();
-      return NextResponse.json({
-        job: instantJob,
-        bookTitle,
-        lessonTitle: lessonTitle || bookTitle,
-        speakerName,
-        mode,
-        pages: prePages,
-      });
-    }
-
     const approxMinutes = Math.max(1, Math.round(fullAudioBuffer.length / (1024 * 1024 * 0.7)));
-    const approxSegments = Math.max(1, Math.ceil(approxMinutes / 8));
-    const estSeconds = Math.max(12, Math.ceil(approxSegments / 2) * 12);
+    const approxSegments = Math.max(1, Math.ceil(approxMinutes / 4));
+    const estSeconds = Math.max(10, Math.ceil(approxSegments / 6) * 11);
 
     const newJob: ServerAudioBookJob = {
       id: jobId,
@@ -250,12 +156,13 @@ export async function POST(req: NextRequest) {
       fileName,
       totalSegments: approxSegments,
       doneSegments: 0,
+      progressPercent: 20,
       audioDurationSec: approxMinutes * 60,
       estimatedTotalSec: estSeconds,
       startedAt: now,
       updatedAt: now,
       status: 'running',
-      statusMessage: 'دەنگ گەهشتە سێرڤەری — دابەشکرن و نڤیسینا بلەز دەستپێکر...',
+      statusMessage: 'دەنگ گەهشتە سێرڤەری — دابەشکرن و نڤیسینا بلەز دەستپێکر (٢٠٪)...',
       pages: [],
     };
 

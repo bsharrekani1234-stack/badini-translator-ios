@@ -40,8 +40,9 @@ export function renderBookPageToCanvas(
   const scale = options?.scale ?? 2;
   const baseFontSize = options?.fontSizePt ?? 15.5;
   const fontFamily = options?.fontFamily ?? '"Amiri", "Noto Naskh Arabic", serif';
-  const headerTitle = options?.headerTitle || BOOK_HEADER_TITLE;
   const design = options?.design || DEFAULT_BOOK_DESIGN;
+  const headerTitle =
+    design.customHeaderTitle?.trim() || options?.headerTitle || BOOK_HEADER_TITLE;
 
   const { headingHex, verseHex, bodyHex, paperHex, frameHex } = resolveEffectiveColors(design);
   const hasCoverBlock = page.blocks.some((b) => b.type === 'cover');
@@ -115,38 +116,114 @@ export function renderBookPageToCanvas(
 
   let cursorY = marginTop;
 
-  // 1. Running Header when page.showHeader is true
-  if (page.showHeader && page.pageNumber >= 2) {
+  // 1. Running Header when page.showHeader is true and headerStyle !== 'none'
+  const headerStyle = design.headerStyle || 'classic-line';
+  if (page.showHeader && page.pageNumber >= 2 && headerStyle !== 'none') {
     const pageNumStr = toEasternArabicNumerals(page.pageNumber);
     const isOdd = page.pageNumber % 2 === 1;
 
     ctx.font = `bold 12px ${fontFamily}`;
     ctx.fillStyle = HEADING_COLOR;
+    ctx.strokeStyle = HEADING_COLOR;
 
-    if (isOdd) {
-      // Odd page: Title on right, Page number on left
+    const drawChamferedBox = (x: number, y: number, w: number, h: number, cut = 5) => {
+      ctx.beginPath();
+      ctx.moveTo(x + cut, y);
+      ctx.lineTo(x + w - cut, y);
+      ctx.lineTo(x + w, y + cut);
+      ctx.lineTo(x + w, y + h - cut);
+      ctx.lineTo(x + w - cut, y + h);
+      ctx.lineTo(x + cut, y + h);
+      ctx.lineTo(x, y + h - cut);
+      ctx.lineTo(x, y + cut);
+      ctx.closePath();
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    };
+
+    if (headerStyle === 'chamfered-boxes') {
+      // Exact match to Image 2: Small chamfered page box on left + wide chamfered title box on right
+      const boxTop = cursorY - 17;
+      const boxH = 26;
+      const numBoxW = 46;
+      const gap = 8;
+      const titleBoxX = leftEdge + numBoxW + gap;
+      const titleBoxW = contentWidth - numBoxW - gap;
+
+      drawChamferedBox(leftEdge, boxTop, numBoxW, boxH, 4.5);
+      drawChamferedBox(titleBoxX, boxTop, titleBoxW, boxH, 4.5);
+
+      ctx.textAlign = 'center';
+      ctx.fillText(pageNumStr, leftEdge + numBoxW / 2, cursorY);
+
       ctx.textAlign = 'right';
-      ctx.fillText(headerTitle, rightEdge, cursorY);
+      ctx.fillText(headerTitle, rightEdge - 10, cursorY);
+    } else if (headerStyle === 'pill-boxes') {
+      const boxTop = cursorY - 17;
+      const boxH = 26;
+      const numBoxW = 44;
+      const gap = 8;
+      const titleBoxX = leftEdge + numBoxW + gap;
+      const titleBoxW = contentWidth - numBoxW - gap;
+
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.roundRect(leftEdge, boxTop, numBoxW, boxH, 13);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.roundRect(titleBoxX, boxTop, titleBoxW, boxH, 13);
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.fillText(pageNumStr, leftEdge + numBoxW / 2, cursorY);
+
+      ctx.textAlign = 'right';
+      ctx.fillText(headerTitle, rightEdge - 12, cursorY);
+    } else if (headerStyle === 'ornate-banner') {
+      const topY = cursorY - 16;
+      const botY = cursorY + 8;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(leftEdge, topY);
+      ctx.lineTo(rightEdge, topY);
+      ctx.moveTo(leftEdge, botY);
+      ctx.lineTo(rightEdge, botY);
+      ctx.stroke();
+
+      ctx.textAlign = 'right';
+      ctx.fillText(`❖ ${headerTitle}`, rightEdge - 4, cursorY);
       ctx.textAlign = 'left';
-      ctx.fillText(pageNumStr, leftEdge, cursorY);
+      ctx.fillText(`﴿ ${pageNumStr} ﴾`, leftEdge + 4, cursorY);
     } else {
-      // Even page: Page number on right, Title on left/center-left
-      ctx.textAlign = 'right';
-      ctx.fillText(pageNumStr, rightEdge, cursorY);
-      ctx.textAlign = 'left';
-      ctx.fillText(headerTitle, leftEdge, cursorY);
+      if (isOdd) {
+        ctx.textAlign = 'right';
+        ctx.fillText(headerTitle, rightEdge, cursorY);
+        ctx.textAlign = 'left';
+        ctx.fillText(pageNumStr, leftEdge, cursorY);
+      } else {
+        ctx.textAlign = 'right';
+        ctx.fillText(pageNumStr, rightEdge, cursorY);
+        ctx.textAlign = 'left';
+        ctx.fillText(headerTitle, leftEdge, cursorY);
+      }
+
+      const lineY = cursorY + 7;
+      ctx.lineWidth = headerStyle === 'double-rule' ? 1.1 : 1.3;
+      ctx.beginPath();
+      ctx.moveTo(leftEdge, lineY);
+      ctx.lineTo(rightEdge, lineY);
+      ctx.stroke();
+
+      if (headerStyle === 'double-rule') {
+        ctx.beginPath();
+        ctx.moveTo(leftEdge, lineY + 3);
+        ctx.lineTo(rightEdge, lineY + 3);
+        ctx.stroke();
+      }
     }
 
-    // Horizontal rule below header
-    const lineY = cursorY + 7;
-    ctx.strokeStyle = HEADING_COLOR;
-    ctx.lineWidth = 1.3;
-    ctx.beginPath();
-    ctx.moveTo(leftEdge, lineY);
-    ctx.lineTo(rightEdge, lineY);
-    ctx.stroke();
-
-    cursorY += 34;
+    cursorY += 36;
   }
 
   // Reserve space at bottom for footnotes if present

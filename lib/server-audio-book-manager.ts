@@ -23,6 +23,7 @@ export interface ServerAudioBookJob {
   fileName: string;
   totalSegments: number;
   doneSegments: number;
+  progressPercent: number;
   audioDurationSec: number;
   estimatedTotalSec: number;
   startedAt: number;
@@ -110,9 +111,9 @@ function toEasternArabic(num: number | string): string {
 }
 
 /**
- * Uses ffprobe/ffmpeg to get audio duration and split long audio into fast, lightweight
- * 8-minute (480s) 16kHz mono 24kbps MP3 segments so they can be transcribed in parallel
- * without hitting any payload limit or timeout.
+ * Uses ffprobe/ffmpeg to get audio duration and split audio into fast, lightweight
+ * 4-minute (240s) 16kHz mono 20kbps MP3 segments so they can be transcribed in high-concurrency
+ * parallel batches without hitting any payload limit or timeout.
  */
 async function splitAudioIntoFastSegments(
   inputPath: string,
@@ -144,10 +145,11 @@ async function splitAudioIntoFastSegments(
 
   const outPattern = path.join(workDir, 'seg_%03d.mp3');
   try {
-    // Convert and split into 180-second (3-minute) mono 16kHz 24kbps MP3 segments (~540 KB each)
-    // Short 3-minute segments prevent output token overflow ("Unterminated string in JSON") and transcribe in parallel
+    // Convert and split into 240-second (4-minute) mono 16kHz 20kbps MP3 segments (~600 KB each) using multi-threading
     await execFileAsync('ffmpeg', [
       '-y',
+      '-threads',
+      '0',
       '-i',
       inputPath,
       '-vn',
@@ -156,11 +158,11 @@ async function splitAudioIntoFastSegments(
       '-ar',
       '16000',
       '-b:a',
-      '24k',
+      '20k',
       '-f',
       'segment',
       '-segment_time',
-      '180',
+      '240',
       outPattern,
     ]);
 
@@ -209,6 +211,7 @@ async function transcribeSingleSegment(
 
   const response = await generateContentResilient(
     {
+      fastMode: true,
       contents: [
         {
           role: 'user',
@@ -229,8 +232,8 @@ async function transcribeSingleSegment(
       ],
       config: {
         systemInstruction: systemPrompt,
-        temperature: 0.2,
-        maxOutputTokens: 32768,
+        temperature: 0.15,
+        maxOutputTokens: 16384,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -291,6 +294,13 @@ function buildBookPagesFromParsed(
   const bookPages: BookPageData[] = [];
 
   if (mode === 'new') {
+    const cleanBookTitle = bookTitle.trim() || 'پەرتووکا دەنگی یا رێکخستی';
+    const cleanLesson = lessonTitle.trim();
+    const coverTitleLines =
+      cleanLesson && !cleanBookTitle.includes(cleanLesson)
+        ? [cleanBookTitle, cleanLesson]
+        : [cleanBookTitle];
+
     bookPages.push({
       pageNumber: 1,
       showHeader: false,
@@ -298,7 +308,7 @@ function buildBookPagesFromParsed(
         {
           type: 'cover',
           kicker: 'پەرتووکا دەنگی یا نڤیسای',
-          titleLines: [bookTitle],
+          titleLines: coverTitleLines,
           compilerLabel: 'وانەبێژ',
           compilerName: speakerName,
           verse: '﴿ وَقُل رَّبِّ زِدْنِي عِلْمًا ﴾',
@@ -409,7 +419,8 @@ export async function runServerAudioToBookWorker(
     const rawInputPath = path.join(jobWorkDir, `input${ext}`);
     fs.writeFileSync(rawInputPath, audioBuffer);
 
-    job.statusMessage = 'دەنگ یێ دهێتە دابەشکرن بۆ بەشێن بلەز دا کو د هەمان دەم دا بهێتە نڤیسین...';
+    job.progressPercent = 22;
+    job.statusMessage = `دابەشکرنا دەنگی بۆ پشکێن بلەز (${toEasternArabic(22)}٪)...`;
     job.updatedAt = Date.now();
     persistAudioJobsStore();
 
@@ -419,17 +430,18 @@ export async function runServerAudioToBookWorker(
     );
 
     const totalSegs = segmentPaths.length;
+    const CONCURRENCY = 6; // Process up to 6 segments simultaneously for fast throughput
     job.totalSegments = totalSegs;
     job.audioDurationSec = durationSec;
-    job.estimatedTotalSec = Math.max(12, Math.ceil(totalSegs / 2) * 12);
+    job.estimatedTotalSec = Math.max(10, Math.ceil(totalSegs / CONCURRENCY) * 11);
+    job.progressPercent = 25;
     job.statusMessage = `دەنگ هاتە دابەشکرن بۆ ${toEasternArabic(
       totalSegs
-    )} پشکان — نڤیسینا بلەز دەستپێکر...`;
+    )} پشکان — نڤیسینا بلەز دەستپێکر (${toEasternArabic(25)}٪)...`;
     job.updatedAt = Date.now();
     persistAudioJobsStore();
 
     const segmentResults: (ParsedSegmentPage[] | null)[] = new Array(totalSegs).fill(null);
-    const CONCURRENCY = 3; // Process 3 short 3-minute segments simultaneously for fast throughput
 
     const transcribeWithSubSplitFallback = async (
       segPath: string,
@@ -449,7 +461,7 @@ export async function runServerAudioToBookWorker(
           currentJob.speakerName
         );
       } catch (firstErr) {
-        // Fallback: split this 3-minute segment into 60-second micro-segments so it never overflows token limits
+        // Fallback: split this segment into 60-second micro-segments so it never overflows token limits
         const subDir = path.join(jobWorkDir, `sub_${segIdx}`);
         try {
           if (!fs.existsSync(subDir)) {
@@ -458,6 +470,8 @@ export async function runServerAudioToBookWorker(
           const subPattern = path.join(subDir, 'micro_%03d.mp3');
           await execFileAsync('ffmpeg', [
             '-y',
+            '-threads',
+            '0',
             '-i',
             segPath,
             '-vn',
@@ -466,7 +480,7 @@ export async function runServerAudioToBookWorker(
             '-ar',
             '16000',
             '-b:a',
-            '24k',
+            '20k',
             '-f',
             'segment',
             '-segment_time',
@@ -514,11 +528,18 @@ export async function runServerAudioToBookWorker(
         batchIndices.push(j);
       }
 
+      const startBatchPct = Math.min(
+        96,
+        Math.max(currentJob.progressPercent || 25, 25 + Math.round((i / Math.max(1, totalSegs)) * 72))
+      );
+      currentJob.progressPercent = startBatchPct;
       currentJob.statusMessage = `پشکا ${toEasternArabic(
         batchIndices[0] + 1
       )} هەتا ${toEasternArabic(
         batchIndices[batchIndices.length - 1] + 1
-      )} ژ ${toEasternArabic(totalSegs)} پەیڤ ب پەیڤ دهێتە نڤیسین...`;
+      )} ژ ${toEasternArabic(totalSegs)} پەیڤ ب پەیڤ دهێتە نڤیسین (${toEasternArabic(
+        startBatchPct
+      )}٪)...`;
       currentJob.updatedAt = Date.now();
       persistAudioJobsStore();
 
@@ -543,11 +564,16 @@ export async function runServerAudioToBookWorker(
               latestJob.lessonTitle,
               latestJob.speakerName
             );
+            const pct = Math.min(
+              98,
+              25 + Math.round((latestJob.doneSegments / Math.max(1, totalSegs)) * 73)
+            );
+            latestJob.progressPercent = Math.max(latestJob.progressPercent || 25, pct);
             latestJob.statusMessage = `پشکا ${toEasternArabic(
               latestJob.doneSegments
             )} ژ ${toEasternArabic(totalSegs)} تەمام بوو (${toEasternArabic(
-              latestJob.pages.length
-            )} لاپەر هاتنە رێکخستن)...`;
+              latestJob.progressPercent
+            )}٪ — ${toEasternArabic(latestJob.pages.length)} لاپەر)...`;
             latestJob.updatedAt = Date.now();
             persistAudioJobsStore();
           }
@@ -570,9 +596,10 @@ export async function runServerAudioToBookWorker(
         finalJob.speakerName
       );
       finalJob.doneSegments = totalSegs;
+      finalJob.progressPercent = 100;
       finalJob.status = 'completed';
       finalJob.error = undefined;
-      finalJob.statusMessage = `دەنگ ب تەمامی هاتە نڤیسین و رێکخستن (${toEasternArabic(
+      finalJob.statusMessage = `دەنگ ب تەمامی هاتە نڤیسین و رێکخستن (١٠٠٪ — ${toEasternArabic(
         finalJob.pages.length
       )} لاپەر)!`;
       finalJob.updatedAt = Date.now();

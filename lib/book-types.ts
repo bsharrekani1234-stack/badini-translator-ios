@@ -128,6 +128,15 @@ export interface BookDesignConfig {
     | 'ottoman-diwan';
   frameColor: string;
   headingBoxed?: boolean;
+  // Running Top Header Style (e.g. 'chamfered-boxes' matching Image 2)
+  headerStyle?:
+    | 'classic-line'
+    | 'chamfered-boxes'
+    | 'pill-boxes'
+    | 'double-rule'
+    | 'ornate-banner'
+    | 'none';
+  customHeaderTitle?: string;
   // Book Cover (Page 1) Design
   cover: CoverDesignConfig;
 }
@@ -146,6 +155,7 @@ export const DEFAULT_BOOK_DESIGN: BookDesignConfig = {
   frameStyle: 'classic-scholarly',
   frameColor: '#E5DEC9',
   headingBoxed: false,
+  headerStyle: 'classic-line',
   cover: {
     style: 'classic-manuscript',
     bgColor: '#FFFDF9',

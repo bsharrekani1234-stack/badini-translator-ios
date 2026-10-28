@@ -20,6 +20,8 @@ export async function POST(req: NextRequest) {
       imageMimeType,
       currentDesign,
       bookTitle,
+      currentPage,
+      totalPages,
       history,
     } = body as {
       message?: string;
@@ -28,6 +30,8 @@ export async function POST(req: NextRequest) {
       imageMimeType?: string;
       currentDesign?: BookDesignConfig;
       bookTitle?: string;
+      currentPage?: number;
+      totalPages?: number;
       history?: { role: 'user' | 'assistant'; text: string }[];
     };
 
@@ -35,57 +39,65 @@ export async function POST(req: NextRequest) {
     const resolvedMessage =
       (message || userMessage || '').trim() ||
       (hasImage
-        ? 'تکایە دیزاینا پەرتووکێ، بەرگێ پەرتووکێ و رەنگێن فۆنتان رێک وەکی ڤی وێنەی چێکە.'
+        ? 'تکایە دیزاینا پەرتووکێ، سەرێ لاپەری، بەرگێ پەرتووکێ و رەنگان رێک وەکی ڤی وێنەی چێکە.'
         : '');
     const baseDesign: BookDesignConfig = currentDesign || DEFAULT_BOOK_DESIGN;
 
     if (!resolvedMessage && !hasImage) {
       return NextResponse.json(
-        { error: 'تکایە بنڤیسە کا تە چ دیزاین یان رەنگ بۆ پەرتووکێ و بەرگی دڤێت، یان وێنەیەکی بهنێرە' },
+        { error: 'تکایە بنڤیسە کا تە چ دیزاین، رەنگ، یان دەستکاری بۆ پەرتووکێ دڤێت، یان وێنەیەکی بهنێرە' },
         { status: 400 }
       );
     }
 
     const recentHistory = (history || [])
-      .slice(-4)
+      .slice(-5)
       .map((h) => `${h.role === 'user' ? 'بکارئینەر' : 'دیزاینەر'}: ${h.text}`)
       .join('\n');
 
-    const systemInstruction = `تۆ ڕۆبۆتێ شارەزایێ دیزاینکرنا پەرتووکان، چێکرنا بەرگێ پەرتووکێ (Cover)، و رێکخستنا رەنگێن فۆنتان (١ رەنگ، ٢ رەنگ، یان ٣ رەنگ) ب زمانێ کوردی (شێوەزارێ بادینی) یی.
-کارێ تە دەمێ بکارئینەر دگەل تە دئاخڤیت یان وێنەیەکی بۆ تە دهنێریت:
-١. ئەگەر بکارئینەری وێنەیەک (Image) هنارتبیت:
-   - ب وردی سەحکە وێنەی! رەنگێن سەرەکی یێن وێنەی دەربینە (رەنگێ پاشخانەیا بەرگی coverBgColor، رەنگێ چوارچووڤە و نەخشان coverAccentColor و frameColor، رەنگێ ناڤونیشانی coverTitleColor و headingColor، رەنگێ ئایەت و نڤیسینا دیارکری verseColor، رەنگێ کاغەزێ paperColor، و رەنگێ نڤیسینا ناڤەڕۆکێ bodyColor).
-   - سەحکە شێوازێ چوارچووڤە و نەخشێ ناڤ وێنەی و نێزیکترین شێوازێ بەرگی (coverStyle: 'royal-frame' | 'islamic-arch' | 'modern-band' | 'classic-manuscript') و شێوازێ چوارچووڤێ ناڤەڕۆکێ (frameStyle: 'royal-manuscript' | 'islamic-mihrab' | 'classic-scholarly' | 'modern-clean' | 'academic-boxed' | 'ottoman-diwan') هەلبژێرە دا دیزاینا پەرتووکێ رێک وەکی وێنەی دەربکەڤیت!
-   - سەحکە کا چەند رەنگێن فۆنتان د وێنەی دا هەنە (١ رەنگ، ٢ رەنگ، یان ٣ رەنگ) و fontColorCount ل دویڤ وێ چەندێ رێکبێخە.
-٢. تۆ دەستکاریا نڤیسینا ناڤەڕۆکا لاپەران ناکەی (چونکی بکارئینەر بخۆ خەلەتیێن نڤیسینێ ب دەستێ خۆ چێدکەت). کارێ تە بتنێ دیزاینکرنا پەرتووکێ، دیزاینکرنا بەرگێ پەرتووکێ، چوارچووڤێ لاپەران، رەنگێ کاغەزێ، و رەنگێن فۆنتانە ل دویڤ دلێ بکارئینەری و وێنەیێ هنارتی!
-٣. سیستەمێ رەنگێن فۆنتان (fontColorCount):
-   - ئەگەر ١ رەنگ (ئێک رەنگ): fontColorCount بکە 1، و هەرسێ رەنگان (headingColor, verseColor, bodyColor) بکە ئێک رەنگێ جوان (بۆ نموونە رەش #111111، یان شینێ تاری #0F2942، یان قەهوەیی #3E2723).
-   - ئەگەر ٢ رەنگ (دوو رەنگ): fontColorCount بکە 2، کو رەنگێ ئێکێ (headingColor و verseColor) بۆ سەردێڕ و ئایەتانە، و رەنگێ دووێ (bodyColor) بۆ ناڤەڕۆک و شڕۆڤەیێ یە.
-   - ئەگەر ٣ رەنگ (سێ رەنگ): fontColorCount بکە 3، کو سێ رەنگێن جودا و هەڤگونجای هەبن:
-     * headingColor: رەنگێ سەردێڕ و بابەتێن سەرەکی (بۆ نموونە کەسکێ زومڕودی #065F46، یان شینێ شاهانە #1E3A8A، یان عەنابی #7F1D1D).
-     * verseColor: رەنگێ ئایەتێن قورئانێ ﴿...﴾ و فەرموودە و پەیڤێن گرنگ (بۆ نموونە زێڕین/برۆنزی #B45309، یان سۆرێ کلاسیکی #CC0000، یان فیرۆزی #0F766E).
-     * bodyColor: رەنگێ نڤیسینا ناڤەڕۆکێ (بۆ نموونە رەشێ نەرم #18181B یان #111111).
-٤. شێوازێ چوارچووڤێ ناڤەڕۆکا پەرتووکێ (frameStyle):
-   - 'classic-scholarly': دیزاینا شەرعی یا کلاسیکی
-   - 'royal-manuscript': دیزاینا شاهانە و دەستنڤیس ب چوارچووڤێ دەبل و نەخشێ گۆشەیان
-   - 'islamic-mihrab': دیزاینا میحرابی یا ئیسلامی
-   - 'modern-clean': دیزاینا مۆدێرن و سادە بێ چوارچووڤە
-   - 'academic-boxed': دیزاینا ئەکادیمی ب سەردێڕێن چوارچووڤەکری
-   - 'ottoman-diwan': دیزاینا دیوانا عوسمانی
-٥. دیزاینا بەرگێ پەرتووکێ (cover):
-   - coverStyle دشێت ببیتە: 'royal-frame' (چوارچووڤێ شاهانە)، 'islamic-arch' (نەخشێ میحرابی)، 'modern-band' (بەرگێ مۆدێرن)، یان 'classic-manuscript' (دەستنڤیسا کلاسیکی).
-   - coverBgColor: رەنگێ پاشخانەیا بەرگی (بۆ نموونە کەسکێ تاری #06392F، عەنابی #4A0E17، شینێ شەڤێ #0F1E36، کرێمی #FFFDF9، رەشێ زێڕین #18181B).
-   - coverAccentColor: رەنگێ چوارچووڤە و نەخشێن بەرگی (بۆ نموونە زێڕین #D4AF37، سۆر #CC0000، فیرۆزی #38BDF8).
-   - coverTitleColor: رەنگێ ناڤونیشانێ مەزن یێ پەرتووکێ ل سەر بەرگی.
-   - coverTextColor: رەنگێ ناڤێ دانەری و نڤیسینێن دی یێن بەرگی.
-   - ئەگەر بکارئینەری داخاز کر ناڤێ پەرتووکێ، ژێرناڤ (subtitle)، ناڤێ مامۆستای/دانەری (authorName)، یان ئایەتا سەر بەرگی بگوهۆڕیت، د ناڤ خانەیێن بەرگی دا بنڤیسە.
-٦. هەردەم بەرسڤەکا گەرم و رۆهن ب شێوەزارێ بادینی د ناڤ reply دا بنڤیسە کا تە چ دیزاین و چەند رەنگ بۆ پەرتووکێ و بەرگی چێکرن (و ئەگەر وێنە هنارتبوو، دیار بکە کا تە چەوا رەنگ و ستایلێ وێنەی ل سەر پەرتووکێ جێبەجێ کر).`;
+    const systemInstruction = `تۆ ڕۆبۆتێ گشتی و زیرەکێ ستۆدیۆیا پەرتووکا بادینی یی. هەمی کارێن دیزاینکرن و رێکخستنا پەرتووکێ د دەستێ تە دانە! هەر تشتەکێ بکارئینەر بێژیتە تە یان وێنەیەکی (Screenshot / Image) بۆ تە بهنێریت، دڤێت تۆ دەمودەست بۆ جێبەجێ بکەی:
+
+١. دەمێ بکارئینەر وێنەیەکی (Image) بۆ تە دهنێریت:
+   - ب وردی سەحکە وێنەی کا چ تێدا دیارە:
+   - ئەگەر وێنە یێ سەرێ لاپەری بیت (Running Header) کو دوو چوارچووڤێن گۆشە-بڕی (Chamfered / Octagonal Boxes) تێدا بن (چوارچووڤەکێ درێژ بۆ ناڤێ پەرتووکێ و چوارچووڤەکێ بچووک بۆ ژمارەیا لاپەری وەکی ٥):
+     * ئێکسەر headerStyle بکە 'chamfered-boxes'!
+     * ئەگەر نڤیسینەک د ناڤ سەرێ لاپەری یێ وێنەی دا هەبیت و بکارئینەری گۆتبیت وەکی وێ بکە، د ناڤ customHeaderTitle دا بنڤیسە.
+     * رەنگێ چوارچووڤێ سەرێ لاپەری د وێنەی دا چ رەنگ بیت (بۆ نموونە رەش #111111 یان سۆر #CC0000 یان شین #1E3A8A)، headingColor بکە ئەو رەنگ!
+   - ئەگەر سەرێ لاپەری د وێنەی دا شێوازێ کەپسولێ یان بازنەیی بیت، headerStyle بکە 'pill-boxes'. ئەگەر دوو هێلێن دبن ئێک دا بن بکە 'double-rule'. ئەگەر شریتێ نەخشدار بیت بکە 'ornate-banner'.
+   - ئەگەر وێنە یێ بەرگێ پەرتووکێ (Cover) یان لاپەرەکێ تەمام بیت:
+     * رەنگێن سەرەکی یێن وێنەی دەربینە (coverBgColor, coverAccentColor, coverTitleColor, coverTextColor, headingColor, verseColor, bodyColor, paperColor, frameColor).
+     * شێوازێ چوارچووڤێ ناڤەڕۆکێ (frameStyle: 'classic-scholarly' | 'royal-manuscript' | 'islamic-mihrab' | 'modern-clean' | 'academic-boxed' | 'ottoman-diwan') و شێوازێ بەرگی (coverStyle: 'classic-manuscript' | 'royal-frame' | 'islamic-arch' | 'modern-band') رێک وەکی وێنەی هەلبژێرە.
+
+٢. ژێبرنا لاپەران (Delete Pages):
+   - ئەگەر بکارئینەری گۆت لاپەرەکی یان چەند لاپەران ژێببە (بۆ نموونە: "لاپەرێ ٢ ژێببە"، "ئەڤی لاپەری ژێببە"، "لاپەرێ ١ و ٢ ژێببە"، "لاپەرێن ٥ هەتا ٨ ژێببە"):
+   - ژمارەیێن وان لاپەران ب دروستی د ناڤ لیستەیا deletePageNumbers دا زڤڕینە (ئەگەر گۆت "ئەڤی لاپەری ژێببە"، ژمارەیا لاپەرێ نوکە ${currentPage || 1} د ناڤ deletePageNumbers دا دانە).
+
+٣. گوهۆڕینا سەرێ لاپەری (Header Style & Header Title):
+   - headerStyle دشێت ببیتە:
+     * 'chamfered-boxes': دوو چوارچووڤێن گۆشە-بڕی ل سەرێ لاپەری (ئێک بۆ ناڤێ پەرتووکێ و ئێک بۆ ژمارەیا لاپەری).
+     * 'pill-boxes': دوو چوارچووڤێن بازنەیی/کەپسولی ل سەرێ لاپەری.
+     * 'ornate-banner': شریتێ نەخشدارێ ئیسلامی ل سەرێ لاپەری.
+     * 'double-rule': دوو هێلێن کلاسیکی ل بن نڤیسینا سەرێ لاپەری.
+     * 'classic-line': هێلا کلاسیکی یا سادە ل سەرێ لاپەری.
+     * 'none': ژێبرن و ڤەشارتنا سەرێ لاپەری ب تەمامی.
+   - ئەگەر بکارئینەری داخاز کر نڤیسینا سەرێ لاپەری بهێتە گوهۆڕین (بۆ نموونە: "ل سەرێ لاپەری بنڤیسە لسەر پەرتووکا الاصول الثلاثة")، وێ نڤیسینێ د customHeaderTitle دا بنڤیسە.
+
+٤. سیستەمێ رەنگێن فۆنتان (١ رەنگ، ٢ رەنگ، ٣ رەنگ) و رەنگێ کاغەزێ و بەرگی:
+   - هەر رەنگەکێ بکارئینەری خواست بۆ فۆنتان، سەردێڕان (headingColor)، ئایەت و فەرموودان (verseColor)، شڕۆڤەیا ناڤەڕۆکێ (bodyColor)، کاغەزێ (paperColor)، چوارچووڤێ لاپەری (frameColor)، یان بەرگێ پەرتووکێ (coverBgColor, coverAccentColor, coverTitleColor, coverTextColor) دەمودەست جێبەجێ بکە.
+   - ئەگەر گۆت بەرگی ژێببە، removeCover بکە true. ئەگەر گۆت بەرگەکی چێکە یان زێدە بکە، addCover بکە true.
+
+٥. گوهۆڕینا فۆنتێ پەرتووکێ و قەبارێ فۆنتی:
+   - ئەگەر بکارئینەری داخازا گوهۆڕینا فۆنتی کر، recommendedFontId بکە ئێک ژ ('original' | 'naskh' | 'scheherazade' | 'lateef' | 'vazirmatn' | 'cairo' | 'kufi'). ئەگەر گۆت فۆنتێ کلاسیکی یێ نەرم بکە 'lateef' یان 'naskh'.
+   - ئەگەر داخازا مەزنکرن یان بچووککرنا قەبارێ فۆنتی کر، recommendedFontSizePt د ناڤبەرا 13.5 و 20 دا دیار بکە.
+
+٦. هەردەم د ناڤ reply دا ب زمانێ کوردی (بادینی) بەرسڤەکا رۆهن و رێکخستی بدە بکارئینەری کا تە چ گوهۆڕین چێکرن.`;
 
     const prompt = `${recentHistory ? `مێژوویا کورت:\n${recentHistory}\n\n` : ''}ناڤێ پەرتووکا نوکە: ${bookTitle || 'پەرتووکا بادینی'}
+لاپەرێ نوکە یێ بکارئینەر ل سەر: لاپەر ${currentPage || 1} ژ سەرجەمێ ${totalPages || 16} لاپەران
 دیزاینا نوکە یا پەرتووکێ:
 ${JSON.stringify(baseDesign)}
 
-${hasImage ? 'بکارئینەری ئەڤ وێنەیە هنارتیە دا کو تۆ دیزاینا پەرتووکێ، بەرگێ پەرتووکێ و رەنگێن فۆنتان ل دویڤ رەنگ و شێوازێ ڤی وێنەی چێبکەی.\n' : ''}داخازا بکارئینەری بۆ دیزاینکرنا پەرتووکێ / بەرگی / رەنگێن فۆنتان:
+${hasImage ? 'بکارئینەری ئەڤ وێنەیە هنارتیە دا کو تۆ دیزاینا پەرتووکێ، یان سەرێ لاپەری (Header)، یان بەرگێ پەرتووکێ و رەنگان رێک وەکی ڤی وێنەی چێبکەی.\n' : ''}داخازا بکارئینەری:
 ${resolvedMessage}`;
 
     let contentsPayload: string | Array<{ inlineData?: { data: string; mimeType: string }; text?: string }> = prompt;
@@ -126,11 +138,32 @@ ${resolvedMessage}`;
             properties: {
               reply: {
                 type: Type.STRING,
-                description: 'بەرسڤا کورت ب بادینی کا تە چ دیزاین بۆ بەرگی، ناڤەڕۆکێ، و رەنگێن فۆنتان چێکر',
+                description: 'بەرسڤا رۆهن ب بادینی کا تە چ گوهۆڕین یان دیزاین جێبەجێ کر',
               },
               didUpdateDesign: {
                 type: Type.BOOLEAN,
-                description: 'true ئەگەر تە دیزاینا پەرتووکێ یان بەرگی یان رەنگێن فۆنتان گوهۆڕی',
+                description: 'true ئەگەر تە هەر گوهۆڕینەک د دیزاینێ یان لاپەران دا چێکر',
+              },
+              headerStyle: {
+                type: Type.STRING,
+                description: 'classic-line | chamfered-boxes | pill-boxes | double-rule | ornate-banner | none',
+              },
+              customHeaderTitle: {
+                type: Type.STRING,
+                description: 'ئەگەر بکارئینەری یان وێنەی نڤیسینەکا نوی بۆ سەرێ لاپەری دیار کربیت',
+              },
+              deletePageNumbers: {
+                type: Type.ARRAY,
+                items: { type: Type.INTEGER },
+                description: 'لیستەیا ژمارەیێن وان لاپەران یێن بکارئینەری گۆتی ژێببە',
+              },
+              addCover: {
+                type: Type.BOOLEAN,
+                description: 'true ئەگەر بکارئینەری داخازا زێدەکرن یان چێکرنا بەرگی کر',
+              },
+              removeCover: {
+                type: Type.BOOLEAN,
+                description: 'true ئەگەر بکارئینەری داخازا ژێبرنا بەرگێ پەرتووکێ کر',
               },
               fontColorCount: {
                 type: Type.INTEGER,
@@ -138,7 +171,7 @@ ${resolvedMessage}`;
               },
               headingColor: {
                 type: Type.STRING,
-                description: 'کۆدێ رەنگێ سەردێڕان (Hex، بۆ نموونە #065F46 یان #CC0000)',
+                description: 'کۆدێ رەنگێ سەردێڕ و سەرێ لاپەری (Hex، بۆ نموونە #111111 یان #065F46 یان #CC0000)',
               },
               verseColor: {
                 type: Type.STRING,
@@ -150,7 +183,7 @@ ${resolvedMessage}`;
               },
               paperColor: {
                 type: Type.STRING,
-                description: 'کۆدێ رەنگێ کاغەزا لاپەرێن ناڤەڕۆکێ (Hex، هەردەم رەنگەکێ ڤەکری دا خوێندن بساناهی بیت)',
+                description: 'کۆدێ رەنگێ کاغەزا لاپەرێن ناڤەڕۆکێ (Hex)',
               },
               frameStyle: {
                 type: Type.STRING,
@@ -195,6 +228,10 @@ ${resolvedMessage}`;
                 type: Type.STRING,
                 description: 'Optional: original | naskh | scheherazade | lateef | vazirmatn | cairo | kufi',
               },
+              recommendedFontSizePt: {
+                type: Type.NUMBER,
+                description: 'Optional: font size between 13.5 and 20',
+              },
             },
             required: ['reply', 'didUpdateDesign'],
           },
@@ -207,6 +244,11 @@ ${resolvedMessage}`;
     const parsed = parseOrRepairJson<{
       reply?: string;
       didUpdateDesign?: boolean;
+      headerStyle?: BookDesignConfig['headerStyle'];
+      customHeaderTitle?: string;
+      deletePageNumbers?: number[];
+      addCover?: boolean;
+      removeCover?: boolean;
       fontColorCount?: number;
       headingColor?: string;
       verseColor?: string;
@@ -228,6 +270,7 @@ ${resolvedMessage}`;
       coverFooterVerse?: string;
       coverFooterRef?: string;
       recommendedFontId?: string;
+      recommendedFontSizePt?: number;
     }>(rawJson);
 
     const validColorCount: 1 | 2 | 3 =
@@ -251,6 +294,19 @@ ${resolvedMessage}`;
       parsed.frameStyle && validFrameStyles.includes(parsed.frameStyle)
         ? parsed.frameStyle
         : baseDesign.frameStyle;
+
+    const validHeaderStyles: NonNullable<BookDesignConfig['headerStyle']>[] = [
+      'classic-line',
+      'chamfered-boxes',
+      'pill-boxes',
+      'double-rule',
+      'ornate-banner',
+      'none',
+    ];
+    const nextHeaderStyle =
+      parsed.headerStyle && validHeaderStyles.includes(parsed.headerStyle)
+        ? parsed.headerStyle
+        : baseDesign.headerStyle || 'classic-line';
 
     const validCoverStyles: BookDesignConfig['cover']['style'][] = [
       'classic-manuscript',
@@ -281,6 +337,11 @@ ${resolvedMessage}`;
       paperColor: parsed.paperColor || baseDesign.paperColor,
       frameStyle: nextFrameStyle,
       frameColor: parsed.frameColor || baseDesign.frameColor,
+      headerStyle: nextHeaderStyle,
+      customHeaderTitle:
+        parsed.customHeaderTitle !== undefined && parsed.customHeaderTitle.trim() !== ''
+          ? parsed.customHeaderTitle.trim()
+          : baseDesign.customHeaderTitle,
       headingBoxed:
         typeof parsed.headingBoxed === 'boolean' ? parsed.headingBoxed : baseDesign.headingBoxed,
       cover: {
@@ -333,10 +394,20 @@ ${resolvedMessage}`;
     return NextResponse.json({
       reply:
         parsed.reply ||
-        'دیزاینا پەرتووکێ و بەرگی و رەنگێن فۆنتان ل دویڤ داخازا تە هاتە نوێکرن!',
+        'دیزاینا پەرتووکێ و سەرێ لاپەری و رەنگان ل دویڤ داخازا تە هاتە نوێکرن!',
       didUpdateDesign: parsed.didUpdateDesign !== false,
       updatedDesign,
+      customHeaderTitle: parsed.customHeaderTitle?.trim() || undefined,
+      deletePageNumbers: Array.isArray(parsed.deletePageNumbers)
+        ? parsed.deletePageNumbers.filter((n) => typeof n === 'number' && n >= 1)
+        : undefined,
+      addCover: Boolean(parsed.addCover),
+      removeCover: Boolean(parsed.removeCover),
       recommendedFontId: parsed.recommendedFontId,
+      recommendedFontSizePt:
+        typeof parsed.recommendedFontSizePt === 'number'
+          ? Math.min(20, Math.max(13.5, parsed.recommendedFontSizePt))
+          : undefined,
     });
   } catch (error: unknown) {
     return NextResponse.json(
@@ -345,4 +416,3 @@ ${resolvedMessage}`;
     );
   }
 }
-
