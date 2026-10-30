@@ -250,11 +250,17 @@ export async function generateContentResilient(
         }
       }
 
-      const response = await aiClient.models.generateContent({
-        ...params,
-        model: modelName,
-        config: baseConfig,
-      });
+      const perAttemptTimeoutMs = params.fastMode ? 22000 : 38000;
+      const response = await Promise.race([
+        aiClient.models.generateContent({
+          ...params,
+          model: modelName,
+          config: baseConfig,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('GEMINI_ATTEMPT_TIMEOUT')), perAttemptTimeoutMs)
+        ),
+      ]);
 
       if (response && response.text) {
         if (isJsonExpected) {
@@ -281,6 +287,12 @@ export async function generateContentResilient(
     } catch (err: unknown) {
       lastError = err;
       const errStr = err instanceof Error ? err.message : String(err);
+
+      // If this model timed out, cool it down briefly and immediately try the next model in the pool
+      if (errStr.includes('GEMINI_ATTEMPT_TIMEOUT')) {
+        cooldownMap.set(modelName, Date.now() + 12000);
+        continue;
+      }
 
       // Daily quota limit on this specific model -> 30 min cooldown, switch immediately
       if (

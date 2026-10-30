@@ -259,7 +259,7 @@ async function transcribeSingleSegment(
       config: {
         systemInstruction: systemPrompt,
         temperature: 0.15,
-        maxOutputTokens: 16384,
+        maxOutputTokens: 8192,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -288,7 +288,7 @@ async function transcribeSingleSegment(
         },
       },
     },
-    10
+    3
   );
 
   const rawJson = response.text?.trim() || '{}';
@@ -310,10 +310,10 @@ async function transcribeSingleSegment(
 }
 
 /**
- * Pure-JS MP3 frame-boundary splitter so large MP3 files can be split into ~2.2MB segments
+ * Pure-JS MP3 frame-boundary splitter so large MP3 files can be split into ~650KB segments
  * in memory even in serverless environments (/var/task) where ffmpeg is not installed.
  */
-export function splitMp3BufferByFrames(buf: Buffer, targetChunkBytes = 2200 * 1024): Buffer[] {
+export function splitMp3BufferByFrames(buf: Buffer, targetChunkBytes = 650 * 1024): Buffer[] {
   if (buf.length <= targetChunkBytes * 1.15) {
     return [buf];
   }
@@ -389,6 +389,27 @@ export async function transcribeSingleSegmentPublic(
   }
 }
 
+function splitLongParagraphIntoBalanced(text: string, maxChars = 460): string[] {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) return [trimmed];
+  const sentences = trimmed.split(/(?<=[.؟!؛\n])\s+/);
+  if (sentences.length <= 1) return [trimmed];
+  const out: string[] = [];
+  let current = '';
+  for (const s of sentences) {
+    if (!current) {
+      current = s;
+    } else if (current.length + 1 + s.length <= maxChars) {
+      current += ' ' + s;
+    } else {
+      out.push(current.trim());
+      current = s;
+    }
+  }
+  if (current.trim()) out.push(current.trim());
+  return out;
+}
+
 export function buildBookPagesFromParsed(
   allParsedPages: ParsedSegmentPage[],
   mode: 'new' | 'append',
@@ -422,76 +443,112 @@ export function buildBookPagesFromParsed(
         },
       ],
     });
+  }
 
-    allParsedPages.forEach((p, idx) => {
-      const pageNum = idx + 2;
-      const blocks: BookPageData['blocks'] = [];
-      if (idx === 0) {
-        blocks.push({
-          type: 'heading',
-          text: lessonTitle
-            ? `${lessonTitle} — بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ`
-            : 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
-          align: 'center',
-          size: 'lg',
-        });
-      }
-      if (p.heading && p.heading.trim()) {
-        blocks.push({
-          type: 'heading',
-          text: p.heading.trim(),
-          align: 'center',
-          size: 'md',
-        });
-      }
-      for (const para of p.paragraphs) {
-        if (para && para.trim()) {
-          blocks.push({
-            type: 'paragraph',
-            text: para.trim(),
-          });
-        }
-      }
-      bookPages.push({
-        pageNumber: pageNum,
-        showHeader: true,
-        blocks,
-      });
+  // Flatten all segment outputs into an ordered stream of blocks and pack into full A4 pages (~1,150-1,380 chars)
+  const streamBlocks: BookPageData['blocks'] = [];
+  if (mode === 'new') {
+    streamBlocks.push({
+      type: 'heading',
+      text: lessonTitle
+        ? `${lessonTitle} — بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ`
+        : 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
+      align: 'center',
+      size: 'lg',
     });
   } else {
-    allParsedPages.forEach((p, idx) => {
-      const pageNum = startPageNumber + idx;
-      const blocks: BookPageData['blocks'] = [];
-      if (idx === 0) {
-        blocks.push({
-          type: 'heading',
-          text: lessonTitle || bookTitle || 'وانا نوێ یا پێکڤەگرێدای',
-          align: 'center',
-          size: 'lg',
-        });
-      }
-      if (p.heading && p.heading.trim() && p.heading.trim() !== lessonTitle) {
-        blocks.push({
-          type: 'heading',
-          text: p.heading.trim(),
-          align: 'center',
-          size: 'md',
-        });
-      }
-      for (const para of p.paragraphs) {
-        if (para && para.trim()) {
-          blocks.push({
+    streamBlocks.push({
+      type: 'heading',
+      text: lessonTitle || bookTitle || 'وانا نوێ یا پێکڤەگرێدای',
+      align: 'center',
+      size: 'lg',
+    });
+  }
+
+  for (const p of allParsedPages) {
+    if (p.heading && p.heading.trim() && p.heading.trim() !== lessonTitle) {
+      streamBlocks.push({
+        type: 'heading',
+        text: p.heading.trim(),
+        align: 'center',
+        size: 'md',
+      });
+    }
+    for (const rawPara of p.paragraphs || []) {
+      if (rawPara && rawPara.trim()) {
+        const balancedParas = splitLongParagraphIntoBalanced(rawPara.trim(), 460);
+        for (const bp of balancedParas) {
+          streamBlocks.push({
             type: 'paragraph',
-            text: para.trim(),
+            text: bp,
           });
         }
       }
-      bookPages.push({
-        pageNumber: pageNum,
-        showHeader: true,
-        blocks,
-      });
+    }
+  }
+
+  const TARGET_PAGE_CHARS = 1180;
+  const MAX_PAGE_CHARS = 1420;
+  const MIN_CHARS_BEFORE_HEADING_BREAK = 760;
+
+  let currentBlocks: BookPageData['blocks'] = [];
+  let currentChars = 0;
+
+  const flushCurrentPage = () => {
+    if (currentBlocks.length === 0) return;
+    const nextPageNum =
+      mode === 'new' ? bookPages.length + 1 : startPageNumber + bookPages.length;
+    bookPages.push({
+      pageNumber: nextPageNum,
+      showHeader: true,
+      blocks: currentBlocks,
     });
+    currentBlocks = [];
+    currentChars = 0;
+  };
+
+  for (let i = 0; i < streamBlocks.length; i++) {
+    const b = streamBlocks[i];
+    const bLen =
+      b.type === 'heading'
+        ? b.text.length + 95
+        : b.type === 'paragraph'
+        ? b.text.length
+        : 80;
+
+    if (
+      b.type === 'heading' &&
+      b.size !== 'lg' &&
+      currentChars >= MIN_CHARS_BEFORE_HEADING_BREAK
+    ) {
+      flushCurrentPage();
+    } else if (
+      b.type === 'paragraph' &&
+      currentChars + bLen > MAX_PAGE_CHARS &&
+      currentChars >= 650
+    ) {
+      flushCurrentPage();
+    }
+
+    currentBlocks.push(b);
+    currentChars += bLen;
+
+    if (currentChars >= TARGET_PAGE_CHARS && b.type === 'paragraph') {
+      flushCurrentPage();
+    }
+  }
+
+  // If the trailing page is very short (< 380 chars) and there is a previous content page, merge it so the last page is also full
+  if (currentBlocks.length > 0) {
+    const lastBookPage = bookPages[bookPages.length - 1];
+    const lastIsCover = lastBookPage?.blocks.some((bl) => bl.type === 'cover');
+    if (currentChars < 380 && lastBookPage && !lastIsCover) {
+      lastBookPage.blocks.push(...currentBlocks);
+      currentBlocks = [];
+      currentChars = 0;
+    } else {
+      flushCurrentPage();
+    }
   }
 
   return bookPages;

@@ -319,10 +319,14 @@ export default function BadiniBookTranslatorPage() {
   ]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Server-side background job tracking
+  // Server-side background job tracking & client-side completed audio segment cache (for instant resume)
   const [activeServerJobId, setActiveServerJobId] = useState<string | null>(null);
+  const audioSegmentCacheRef = useRef<
+    Map<string, { heading?: string; paragraphs: string[] }[]>
+  >(new Map());
 
-  // Live 1-second timer during Audio-to-Book conversion to show Elapsed & Remaining Time and smoothly advance in-flight batch progress
+  // Live 1-second timer during Audio-to-Book conversion to show Elapsed & Remaining Time,
+  // smoothly advance in-flight progress, and keep Nginx auth cookie cache warm every 18s
   useEffect(() => {
     if (!isConvertingAudio) {
       setAudioElapsedSec(0);
@@ -332,8 +336,11 @@ export default function BadiniBookTranslatorPage() {
     const timer = setInterval(() => {
       setAudioElapsedSec((prevSec) => {
         const nextSec = prevSec + 1;
+        if (nextSec % 18 === 0) {
+          void fetch('/api/audio-to-book?ping=1', { cache: 'no-store' }).catch(() => {});
+        }
         setAudioProgressPercent((prevPct) => {
-          if (prevPct >= 20 && prevPct < 94) {
+          if (prevPct >= 5 && prevPct < 94) {
             const nextPct = Math.min(94, prevPct + 1);
             setAudioConvertStatus((prevStatus) => {
               if (!prevStatus) return prevStatus;
@@ -420,7 +427,24 @@ export default function BadiniBookTranslatorPage() {
       if (savedCustom) {
         const parsed = JSON.parse(savedCustom) as BookProject[];
         if (Array.isArray(parsed)) {
-          setCustomBooks(parsed.filter((b) => !loadedDeletedIds.includes(b.id)));
+          const compactedBooks = parsed
+            .filter((b) => !loadedDeletedIds.includes(b.id))
+            .map((b) => {
+              if (!b.pages || b.pages.length <= 2) return b;
+              const isAudioBook =
+                Boolean(b.audioUrl) ||
+                Boolean(b.audioTracks && b.audioTracks.length > 0) ||
+                Boolean(b.createdAt && b.createdAt.includes('دەنگی'));
+              if (!isAudioBook) return b;
+              const compacted = compactSparseAudioBookPages(b.pages, b.audioTracks);
+              return {
+                ...b,
+                pages: compacted.pages,
+                totalPages: compacted.pages.length,
+                audioTracks: compacted.tracks,
+              };
+            });
+          setCustomBooks(compactedBooks);
         }
       }
       const savedBookFont = localStorage.getItem(STORAGE_KEY_BOOK_FONT);
@@ -451,11 +475,26 @@ export default function BadiniBookTranslatorPage() {
           }
         }
       }
+      const savedQawaidTracks = localStorage.getItem(STORAGE_KEY_QAWAID_TRACKS);
+      let loadedQawaidTracks: AudioLessonTrack[] | undefined;
+      if (savedQawaidTracks) {
+        const parsedTracks = JSON.parse(savedQawaidTracks) as AudioLessonTrack[];
+        if (Array.isArray(parsedTracks) && parsedTracks.length > 0) {
+          loadedQawaidTracks = parsedTracks;
+          setQawaidAudioTracks(parsedTracks);
+        }
+      }
       const savedQawaidFull = localStorage.getItem(STORAGE_KEY_QAWAID_FULL_PAGES);
       if (savedQawaidFull) {
         const parsedPages = JSON.parse(savedQawaidFull) as BookPageData[];
         if (Array.isArray(parsedPages) && parsedPages.length >= 1) {
-          setQawaidBookPages(parsedPages);
+          const compacted = compactSparseAudioBookPages(
+            parsedPages,
+            loadedQawaidTracks,
+            QAWAID_ARBA_LESSON1_PAGES.length
+          );
+          setQawaidBookPages(compacted.pages);
+          if (compacted.tracks) setQawaidAudioTracks(compacted.tracks);
         }
       } else {
         const savedQawaidEdits = localStorage.getItem(STORAGE_KEY_QAWAID_EDITS);
@@ -470,25 +509,26 @@ export default function BadiniBookTranslatorPage() {
           }
         }
       }
-      const savedQawaidTracks = localStorage.getItem(STORAGE_KEY_QAWAID_TRACKS);
-      if (savedQawaidTracks) {
-        const parsedTracks = JSON.parse(savedQawaidTracks) as AudioLessonTrack[];
+      const savedShakhsiyaTracks = localStorage.getItem(STORAGE_KEY_SHAKHSIYA_TRACKS);
+      let loadedShakhsiyaTracks: AudioLessonTrack[] | undefined;
+      if (savedShakhsiyaTracks) {
+        const parsedTracks = JSON.parse(savedShakhsiyaTracks) as AudioLessonTrack[];
         if (Array.isArray(parsedTracks) && parsedTracks.length > 0) {
-          setQawaidAudioTracks(parsedTracks);
+          loadedShakhsiyaTracks = parsedTracks;
+          setShakhsiyaAudioTracks(parsedTracks);
         }
       }
       const savedShakhsiyaFull = localStorage.getItem(STORAGE_KEY_SHAKHSIYA_FULL_PAGES);
       if (savedShakhsiyaFull) {
         const parsedPages = JSON.parse(savedShakhsiyaFull) as BookPageData[];
         if (Array.isArray(parsedPages) && parsedPages.length >= 1) {
-          setShakhsiyaBookPages(parsedPages);
-        }
-      }
-      const savedShakhsiyaTracks = localStorage.getItem(STORAGE_KEY_SHAKHSIYA_TRACKS);
-      if (savedShakhsiyaTracks) {
-        const parsedTracks = JSON.parse(savedShakhsiyaTracks) as AudioLessonTrack[];
-        if (Array.isArray(parsedTracks) && parsedTracks.length > 0) {
-          setShakhsiyaAudioTracks(parsedTracks);
+          const compacted = compactSparseAudioBookPages(
+            parsedPages,
+            loadedShakhsiyaTracks,
+            SHAKHSIYA_QAWIYA_PAGES.length
+          );
+          setShakhsiyaBookPages(compacted.pages);
+          if (compacted.tracks) setShakhsiyaAudioTracks(compacted.tracks);
         }
       }
     } catch {
@@ -1266,7 +1306,8 @@ export default function BadiniBookTranslatorPage() {
     await handleExportSpecificBookPdf(
       pages,
       activeBook.headerTitle,
-      `${activeBook.headerTitle.replace(/\s+/g, '-')}-بادینی.pdf`
+      `${activeBook.headerTitle.replace(/\s+/g, '-')}-بادینی.pdf`,
+      activeBook.id
     );
   };
 
@@ -1277,7 +1318,8 @@ export default function BadiniBookTranslatorPage() {
     await handleExportSpecificBookPdf(
       selectedPages,
       activeBook.headerTitle,
-      `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${start}-بۆ-${end}.pdf`
+      `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${start}-بۆ-${end}.pdf`,
+      activeBook.id
     );
   };
 
@@ -1285,7 +1327,8 @@ export default function BadiniBookTranslatorPage() {
     await handleExportSpecificBookWord(
       pages,
       activeBook.headerTitle,
-      `${activeBook.headerTitle.replace(/\s+/g, '-')}-بادینی.doc`
+      `${activeBook.headerTitle.replace(/\s+/g, '-')}-بادینی.doc`,
+      activeBook.id
     );
   };
 
@@ -1296,7 +1339,8 @@ export default function BadiniBookTranslatorPage() {
     await handleExportSpecificBookWord(
       selectedPages,
       activeBook.headerTitle,
-      `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${start}-بۆ-${end}.doc`
+      `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${start}-بۆ-${end}.doc`,
+      activeBook.id
     );
   };
 
@@ -1305,7 +1349,8 @@ export default function BadiniBookTranslatorPage() {
     await handleExportSpecificBookWord(
       [currentPageData],
       activeBook.headerTitle,
-      `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${currentPage}.doc`
+      `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${currentPage}.doc`,
+      activeBook.id
     );
   };
 
@@ -1522,13 +1567,13 @@ export default function BadiniBookTranslatorPage() {
     return uploadId;
   };
 
-  // Split MP3 or decode other large audio files in browser memory into ~2MB segments so they can be
-  // transcribed in parallel via stateless HTTP requests (100% immune to /var/task read-only disk or serverless freezes)
+  // Split MP3 or decode other large audio files in browser memory into compact ~650KB segments so each segment
+  // uploads in <0.4s and transcribes in 3-5s (never choking mobile upload bandwidth or hitting proxy timeouts)
   const prepareClientAudioSegments = async (
     file: File,
     fileBytes: Uint8Array
   ): Promise<{ bytes: Uint8Array; mimeType: string }[]> => {
-    const TARGET_CHUNK_BYTES = 2000 * 1024; // ~2.0 MB per segment
+    const TARGET_CHUNK_BYTES = 650 * 1024; // ~650 KB per segment (~45-60s of speech)
     const lowerName = file.name.toLowerCase();
     const isMp3 =
       lowerName.endsWith('.mp3') || file.type === 'audio/mpeg' || file.type === 'audio/mp3';
@@ -1568,7 +1613,7 @@ export default function BadiniBookTranslatorPage() {
       return chunks;
     }
 
-    // For large .m4a / .wav / .ogg / .aac (> 2.3 MB), decode via Web Audio API into 120-second 11025Hz mono WAV segments (~2.5MB each)
+    // For .m4a / .wav / .ogg / .aac (> 750 KB), decode via Web Audio API into 55-second 8000Hz mono WAV segments (~880KB each)
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -1577,9 +1622,9 @@ export default function BadiniBookTranslatorPage() {
         const ctx = new AudioCtx();
         const decoded = await ctx.decodeAudioData(fileBytes.slice().buffer as ArrayBuffer);
         void ctx.close();
-        const targetRate = 11025;
+        const targetRate = 8000;
         const totalDuration = decoded.duration;
-        const segDuration = 120; // 2 minutes per WAV segment (~2.5 MB at 11025Hz 16-bit mono)
+        const segDuration = 55; // 55 seconds per WAV segment (~880 KB at 8000Hz 16-bit mono)
         const numSegs = Math.max(1, Math.ceil(totalDuration / segDuration));
         const srcData = decoded.getChannelData(0);
         const srcRate = decoded.sampleRate;
@@ -1635,7 +1680,264 @@ export default function BadiniBookTranslatorPage() {
     return [];
   };
 
-  // Assemble BookPageData[] from transcribed segment pages
+  // Split any MP3 or WAV segment in half in browser memory if a segment ever encounters network/timeout retries
+  const splitClientSegmentInHalf = (
+    bytes: Uint8Array,
+    mimeType: string
+  ): { bytes: Uint8Array; mimeType: string }[] => {
+    if (bytes.byteLength < 120 * 1024) {
+      return [{ bytes, mimeType }];
+    }
+
+    if (mimeType === 'audio/wav' && bytes.byteLength > 100) {
+      const pcmPayload = bytes.subarray(44);
+      const halfSamplesBytes = Math.floor(pcmPayload.byteLength / 4) * 2;
+      if (halfSamplesBytes > 1000) {
+        const makeWavPart = (pcmSlice: Uint8Array) => {
+          const out = new Uint8Array(44 + pcmSlice.byteLength);
+          out.set(bytes.subarray(0, 44), 0);
+          out.set(pcmSlice, 44);
+          const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+          dv.setUint32(4, 36 + pcmSlice.byteLength, true);
+          dv.setUint32(40, pcmSlice.byteLength, true);
+          return { bytes: out, mimeType: 'audio/wav' };
+        };
+        return [
+          makeWavPart(pcmPayload.subarray(0, halfSamplesBytes)),
+          makeWavPart(pcmPayload.subarray(halfSamplesBytes)),
+        ];
+      }
+    }
+
+    // Default / MP3 frame-sync split
+    let mid = Math.floor(bytes.byteLength / 2);
+    const searchLimit = Math.min(bytes.byteLength - 2, mid + 8192);
+    for (let pos = mid; pos < searchLimit; pos++) {
+      if (bytes[pos] === 0xff && (bytes[pos + 1] & 0xe0) === 0xe0) {
+        mid = pos;
+        break;
+      }
+    }
+    return [
+      { bytes: bytes.subarray(0, mid), mimeType },
+      { bytes: bytes.subarray(mid), mimeType },
+    ];
+  };
+
+  // Split an overly long paragraph at sentence boundaries so pages pack cleanly
+  function splitLongClientParagraph(text: string, maxChars = 460): string[] {
+    const trimmed = text.trim();
+    if (trimmed.length <= maxChars) return [trimmed];
+    const sentences = trimmed.split(/(?<=[.؟!؛\n])\s+/);
+    if (sentences.length <= 1) return [trimmed];
+    const out: string[] = [];
+    let current = '';
+    for (const s of sentences) {
+      if (!current) {
+        current = s;
+      } else if (current.length + 1 + s.length <= maxChars) {
+        current += ' ' + s;
+      } else {
+        out.push(current.trim());
+        current = s;
+      }
+    }
+    if (current.trim()) out.push(current.trim());
+    return out;
+  }
+
+  // Pack an ordered list of content blocks into full, balanced A4 BookPageData pages (~1,180-1,380 chars per page)
+  function packBlocksIntoFullBookPages(
+    streamBlocks: BookPageData['blocks'],
+    firstPageNum: number
+  ): BookPageData[] {
+    const TARGET_PAGE_CHARS = 1180;
+    const MAX_PAGE_CHARS = 1420;
+    const MIN_CHARS_BEFORE_HEADING_BREAK = 760;
+
+    const resultPages: BookPageData[] = [];
+    let currentBlocks: BookPageData['blocks'] = [];
+    let currentChars = 0;
+
+    const flushCurrentPage = () => {
+      if (currentBlocks.length === 0) return;
+      resultPages.push({
+        pageNumber: firstPageNum + resultPages.length,
+        showHeader: true,
+        blocks: currentBlocks,
+      });
+      currentBlocks = [];
+      currentChars = 0;
+    };
+
+    for (let i = 0; i < streamBlocks.length; i++) {
+      const b = streamBlocks[i];
+      const bLen =
+        b.type === 'heading'
+          ? b.text.length + 95
+          : b.type === 'paragraph'
+          ? b.text.length
+          : 80;
+
+      if (b.type === 'heading' && b.size === 'lg' && currentBlocks.length > 0) {
+        flushCurrentPage();
+      } else if (
+        b.type === 'heading' &&
+        b.size !== 'lg' &&
+        currentChars >= MIN_CHARS_BEFORE_HEADING_BREAK
+      ) {
+        flushCurrentPage();
+      } else if (
+        b.type === 'paragraph' &&
+        currentChars + bLen > MAX_PAGE_CHARS &&
+        currentChars >= 650
+      ) {
+        flushCurrentPage();
+      }
+
+      currentBlocks.push(b);
+      currentChars += bLen;
+
+      if (currentChars >= TARGET_PAGE_CHARS && b.type === 'paragraph') {
+        flushCurrentPage();
+      }
+    }
+
+    if (currentBlocks.length > 0) {
+      const lastPage = resultPages[resultPages.length - 1];
+      const startsNewLesson = currentBlocks.some(
+        (bl) => bl.type === 'heading' && bl.size === 'lg'
+      );
+      if (currentChars < 380 && lastPage && !startsNewLesson) {
+        lastPage.blocks.push(...currentBlocks);
+        currentBlocks = [];
+        currentChars = 0;
+      } else {
+        flushCurrentPage();
+      }
+    }
+
+    return resultPages;
+  };
+
+  // Automatically compact any sparse consecutive audio pages (e.g. from 650KB segments) into full A4 pages
+  function compactSparseAudioBookPages(
+    rawPages: BookPageData[],
+    rawTracks?: AudioLessonTrack[],
+    preservePrefixCount = 0
+  ): { pages: BookPageData[]; tracks?: AudioLessonTrack[] } {
+    const getPageCharLen = (p: BookPageData): number =>
+      p.blocks.reduce(
+        (acc, b) =>
+          acc +
+          (b.type === 'paragraph' || b.type === 'heading' ? b.text.length : 500),
+        0
+      );
+
+    // Check if there are any sparse content pages (< 720 chars) after preservePrefixCount
+    const candidatePages = rawPages.slice(preservePrefixCount);
+    const contentCandidates = candidatePages.filter(
+      (p) => !p.blocks.some((b) => b.type === 'cover')
+    );
+    if (contentCandidates.length <= 1) {
+      return { pages: rawPages, tracks: rawTracks };
+    }
+    const sparseCount = contentCandidates.filter((p) => getPageCharLen(p) < 720).length;
+    if (sparseCount === 0) {
+      return { pages: rawPages, tracks: rawTracks };
+    }
+
+    // If tracks are present, compact each track after preservePrefixCount independently so lesson boundaries stay exact
+    if (rawTracks && rawTracks.length > 0) {
+      const outPages: BookPageData[] = [];
+      const outTracks: AudioLessonTrack[] = [];
+
+      for (let tIdx = 0; tIdx < rawTracks.length; tIdx++) {
+        const trk = rawTracks[tIdx];
+        const trkPages = rawPages.filter(
+          (p) => p.pageNumber >= trk.startPage && p.pageNumber <= trk.endPage
+        );
+        if (trkPages.length === 0) continue;
+
+        const isPreservedBuiltInTrack =
+          preservePrefixCount > 0 && trk.endPage <= preservePrefixCount;
+
+        if (isPreservedBuiltInTrack) {
+          const trackStart = outPages.length + 1;
+          for (const tp of trkPages) {
+            outPages.push({ ...tp, pageNumber: outPages.length + 1 });
+          }
+          outTracks.push({
+            ...trk,
+            startPage: trackStart,
+            endPage: outPages.length,
+          });
+        } else {
+          const trackStart = outPages.length + 1;
+          const coverPages = trkPages.filter((p) =>
+            p.blocks.some((b) => b.type === 'cover')
+          );
+          for (const cp of coverPages) {
+            outPages.push({ ...cp, pageNumber: outPages.length + 1 });
+          }
+          const nonCoverPages = trkPages.filter(
+            (p) => !p.blocks.some((b) => b.type === 'cover')
+          );
+          const stream: BookPageData['blocks'] = [];
+          for (const np of nonCoverPages) {
+            for (const b of np.blocks) {
+              if (b.type === 'paragraph') {
+                for (const sub of splitLongClientParagraph(b.text, 460)) {
+                  stream.push({ ...b, text: sub });
+                }
+              } else {
+                stream.push(b);
+              }
+            }
+          }
+          const packed = packBlocksIntoFullBookPages(stream, outPages.length + 1);
+          outPages.push(...packed);
+          outTracks.push({
+            ...trk,
+            startPage: trackStart,
+            endPage: Math.max(trackStart, outPages.length),
+          });
+        }
+      }
+
+      if (outPages.length > 0) {
+        return { pages: outPages, tracks: outTracks };
+      }
+    }
+
+    // Fallback when no tracks array is present: preserve prefix & cover pages, pack remaining content blocks
+    const outPages: BookPageData[] = [];
+    for (let i = 0; i < rawPages.length; i++) {
+      const p = rawPages[i];
+      if (i < preservePrefixCount || p.blocks.some((b) => b.type === 'cover')) {
+        outPages.push({ ...p, pageNumber: outPages.length + 1 });
+      }
+    }
+    const remainingStream: BookPageData['blocks'] = [];
+    for (let i = preservePrefixCount; i < rawPages.length; i++) {
+      const p = rawPages[i];
+      if (p.blocks.some((b) => b.type === 'cover')) continue;
+      for (const b of p.blocks) {
+        if (b.type === 'paragraph') {
+          for (const sub of splitLongClientParagraph(b.text, 460)) {
+            remainingStream.push({ ...b, text: sub });
+          }
+        } else {
+          remainingStream.push(b);
+        }
+      }
+    }
+    const packed = packBlocksIntoFullBookPages(remainingStream, outPages.length + 1);
+    outPages.push(...packed);
+    return { pages: outPages, tracks: rawTracks };
+  }
+
+  // Assemble BookPageData[] from transcribed segment pages into full, balanced A4 pages
   const assembleBookPagesFromSegmentPages = (
     allParsedPages: { heading?: string; paragraphs: string[] }[],
     mode: 'new' | 'append',
@@ -1669,77 +1971,55 @@ export default function BadiniBookTranslatorPage() {
           },
         ],
       });
+    }
 
-      allParsedPages.forEach((p, idx) => {
-        const pageNum = idx + 2;
-        const blocks: BookPageData['blocks'] = [];
-        if (idx === 0) {
-          blocks.push({
-            type: 'heading',
-            text: lessonTitle
-              ? `${lessonTitle} — بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ`
-              : 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
-            align: 'center',
-            size: 'lg',
-          });
-        }
-        if (p.heading && p.heading.trim()) {
-          blocks.push({
-            type: 'heading',
-            text: p.heading.trim(),
-            align: 'center',
-            size: 'md',
-          });
-        }
-        for (const para of p.paragraphs || []) {
-          if (para && para.trim()) {
-            blocks.push({
-              type: 'paragraph',
-              text: para.trim(),
-            });
-          }
-        }
-        bookPages.push({
-          pageNumber: pageNum,
-          showHeader: true,
-          blocks,
-        });
+    const streamBlocks: BookPageData['blocks'] = [];
+    if (mode === 'new') {
+      streamBlocks.push({
+        type: 'heading',
+        text: lessonTitle
+          ? `${lessonTitle} — بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ`
+          : 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
+        align: 'center',
+        size: 'lg',
       });
     } else {
-      allParsedPages.forEach((p, idx) => {
-        const pageNum = startPageNumber + idx;
-        const blocks: BookPageData['blocks'] = [];
-        if (idx === 0) {
-          blocks.push({
-            type: 'heading',
-            text: lessonTitle || bookTitle || 'وانا نوێ یا پێکڤەگرێدای',
-            align: 'center',
-            size: 'lg',
-          });
-        }
-        if (p.heading && p.heading.trim() && p.heading.trim() !== lessonTitle) {
-          blocks.push({
-            type: 'heading',
-            text: p.heading.trim(),
-            align: 'center',
-            size: 'md',
-          });
-        }
-        for (const para of p.paragraphs || []) {
-          if (para && para.trim()) {
-            blocks.push({
+      streamBlocks.push({
+        type: 'heading',
+        text: lessonTitle || bookTitle || 'وانا نوێ یا پێکڤەگرێدای',
+        align: 'center',
+        size: 'lg',
+      });
+    }
+
+    for (const p of allParsedPages) {
+      if (p.heading && p.heading.trim() && p.heading.trim() !== lessonTitle) {
+        streamBlocks.push({
+          type: 'heading',
+          text: p.heading.trim(),
+          align: 'center',
+          size: 'md',
+        });
+      }
+      for (const rawPara of p.paragraphs || []) {
+        if (rawPara && rawPara.trim()) {
+          for (const bp of splitLongClientParagraph(rawPara.trim(), 460)) {
+            streamBlocks.push({
               type: 'paragraph',
-              text: para.trim(),
+              text: bp,
             });
           }
         }
-        bookPages.push({
-          pageNumber: pageNum,
-          showHeader: true,
-          blocks,
-        });
-      });
+      }
     }
+
+    const firstContentPageNum =
+      mode === 'new' ? bookPages.length + 1 : startPageNumber;
+    const packedContentPages = packBlocksIntoFullBookPages(
+      streamBlocks,
+      firstContentPageNum
+    );
+    bookPages.push(...packedContentPages);
 
     return bookPages;
   };
@@ -1753,6 +2033,9 @@ export default function BadiniBookTranslatorPage() {
     setIsConvertingAudio(true);
 
     try {
+      // Warm up Nginx auth token cache before launching segment POST requests
+      await fetch('/api/audio-to-book?ping=1', { cache: 'no-store' }).catch(() => {});
+
       let currentTargetId = targetAppendBookId;
       let currentMode: 'new' | 'append' = audioTargetMode;
 
@@ -1797,80 +2080,148 @@ export default function BadiniBookTranslatorPage() {
           ).fill(null);
           let completedSegs = 0;
 
-          setAudioProgressPercent(15);
+          setAudioProgressPercent(10);
           setAudioConvertStatus(
             `دەنگ هاتە دابەشکرن بۆ ${toEasternArabicNumerals(
               totalSegs
-            )} پشکان — نڤیسینا بلەز دەستپێکر (${toEasternArabicNumerals(15)}٪)...`
+            )} پشکێن بلەز — نڤیسین دەستپێکر (${toEasternArabicNumerals(10)}٪)...`
           );
 
-          const SEG_CONCURRENCY = 5;
-          for (let s = 0; s < totalSegs; s += SEG_CONCURRENCY) {
-            const batchIndices: number[] = [];
-            for (let b = s; b < Math.min(totalSegs, s + SEG_CONCURRENCY); b++) {
-              batchIndices.push(b);
+          const transcribeBufferWithAutoSplit = async (
+            segBytes: Uint8Array,
+            segMime: string,
+            segIdx: number,
+            splitDepth = 0
+          ): Promise<{ heading?: string; paragraphs: string[] }[]> => {
+            let lastErr: unknown = null;
+            const maxDirectAttempts = splitDepth === 0 ? 3 : 5;
+
+            for (let attempt = 0; attempt < maxDirectAttempts; attempt++) {
+              try {
+                let res: Response;
+                if (attempt % 2 === 0) {
+                  const fd = new FormData();
+                  fd.append('action', 'transcribe-segment');
+                  fd.append('chunkIndex', String(segIdx));
+                  fd.append('totalSegments', String(totalSegs));
+                  fd.append('fileName', file.name);
+                  fd.append('mimeType', segMime);
+                  fd.append('bookTitle', effectiveBookTitle);
+                  fd.append('lessonTitle', computedLessonTitle);
+                  fd.append('speakerName', effectiveSpeaker);
+                  fd.append(
+                    'chunk',
+                    new Blob([segBytes.slice().buffer as ArrayBuffer], {
+                      type: segMime,
+                    }),
+                    `seg_${segIdx}.${segMime.includes('wav') ? 'wav' : 'mp3'}`
+                  );
+
+                  res = await fetch('/api/audio-to-book', {
+                    method: 'POST',
+                    body: fd,
+                  });
+                } else {
+                  const chunkBase64 = uint8SliceToBase64(segBytes);
+                  res = await fetch('/api/audio-to-book', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      action: 'transcribe-segment',
+                      chunkIndex: segIdx,
+                      totalSegments: totalSegs,
+                      fileName: file.name,
+                      mimeType: segMime,
+                      bookTitle: effectiveBookTitle,
+                      lessonTitle: computedLessonTitle,
+                      speakerName: effectiveSpeaker,
+                      chunkBase64,
+                    }),
+                  });
+                }
+
+                const parsed = await safeParseJson(res);
+                if (!res.ok || parsed.error || !Array.isArray(parsed.pages)) {
+                  throw new Error(parsed.error || 'شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
+                }
+                return parsed.pages as { heading?: string; paragraphs: string[] }[];
+              } catch (err) {
+                lastErr = err;
+                // Warm up connection / auth cookie before retrying
+                await fetch('/api/audio-to-book?ping=1', { cache: 'no-store' }).catch(() => {});
+                await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+              }
             }
 
-            await Promise.all(
-              batchIndices.map(async (segIdx) => {
+            // If direct attempts failed and we can split this segment into 2 smaller halves, do so automatically!
+            if (splitDepth < 2 && segBytes.byteLength > 150 * 1024) {
+              const halves = splitClientSegmentInHalf(segBytes, segMime);
+              if (halves.length === 2) {
+                const pagesA = await transcribeBufferWithAutoSplit(
+                  halves[0].bytes,
+                  halves[0].mimeType,
+                  segIdx,
+                  splitDepth + 1
+                );
+                const pagesB = await transcribeBufferWithAutoSplit(
+                  halves[1].bytes,
+                  halves[1].mimeType,
+                  segIdx,
+                  splitDepth + 1
+                );
+                return [...pagesA, ...pagesB];
+              }
+            }
+
+            throw lastErr || new Error('شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
+          };
+
+          // Continuous 3-worker pool with staggered start so upload bandwidth is never saturated
+          let nextSegCursor = 0;
+          const WORKER_COUNT = Math.min(3, totalSegs);
+
+          const runSegmentWorker = async (workerId: number) => {
+            if (workerId > 0) {
+              await new Promise((r) => setTimeout(r, workerId * 180));
+            }
+            while (true) {
+              const segIdx = nextSegCursor++;
+              if (segIdx >= totalSegs) break;
+
+              const cacheKey = `${file.name}:${file.size}:${totalSegs}:${segIdx}`;
+              const cachedPages = audioSegmentCacheRef.current.get(cacheKey);
+
+              if (cachedPages && cachedPages.length > 0) {
+                segResults[segIdx] = cachedPages;
+              } else {
                 const seg = clientSegments[segIdx];
-                let lastSegErr: unknown = null;
-                for (let attempt = 0; attempt < 4; attempt++) {
-                  try {
-                    const fd = new FormData();
-                    fd.append('action', 'transcribe-segment');
-                    fd.append('chunkIndex', String(segIdx));
-                    fd.append('totalSegments', String(totalSegs));
-                    fd.append('fileName', file.name);
-                    fd.append('mimeType', seg.mimeType);
-                    fd.append('bookTitle', effectiveBookTitle);
-                    fd.append('lessonTitle', computedLessonTitle);
-                    fd.append('speakerName', effectiveSpeaker);
-                    fd.append(
-                      'chunk',
-                      new Blob([seg.bytes.slice().buffer as ArrayBuffer], {
-                        type: seg.mimeType,
-                      }),
-                      `seg_${segIdx}.mp3`
-                    );
-
-                    const res = await fetch('/api/audio-to-book', {
-                      method: 'POST',
-                      body: fd,
-                    });
-                    const parsed = await safeParseJson(res);
-                    if (!res.ok || parsed.error || !Array.isArray(parsed.pages)) {
-                      throw new Error(parsed.error || 'شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
-                    }
-                    segResults[segIdx] = parsed.pages as {
-                      heading?: string;
-                      paragraphs: string[];
-                    }[];
-                    lastSegErr = null;
-                    break;
-                  } catch (err) {
-                    lastSegErr = err;
-                    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
-                  }
-                }
-                if (lastSegErr) {
-                  throw lastSegErr;
-                }
-
-                completedSegs++;
-                const pct = Math.min(
-                  98,
-                  15 + Math.round((completedSegs / Math.max(1, totalSegs)) * 83)
+                const pages = await transcribeBufferWithAutoSplit(
+                  seg.bytes,
+                  seg.mimeType,
+                  segIdx,
+                  0
                 );
-                setAudioProgressPercent((prev) => Math.max(prev, pct));
-                setAudioConvertStatus(
-                  `پشکا ${toEasternArabicNumerals(completedSegs)} ژ ${toEasternArabicNumerals(
-                    totalSegs
-                  )} ب سەرکەفتیانە هاتە نڤیسین (${toEasternArabicNumerals(pct)}٪)...`
-                );
-              })
-            );
-          }
+                audioSegmentCacheRef.current.set(cacheKey, pages);
+                segResults[segIdx] = pages;
+              }
+
+              completedSegs++;
+              const pct = Math.min(
+                98,
+                10 + Math.round((completedSegs / Math.max(1, totalSegs)) * 88)
+              );
+              setAudioProgressPercent((prev) => Math.max(prev, pct));
+              setAudioConvertStatus(
+                `پشکا ${toEasternArabicNumerals(completedSegs)} ژ ${toEasternArabicNumerals(
+                  totalSegs
+                )} ب سەرکەفتیانە هاتە نڤیسین (${toEasternArabicNumerals(pct)}٪)...`
+              );
+            }
+          };
+
+          await Promise.all(
+            Array.from({ length: WORKER_COUNT }, (_, wIdx) => runSegmentWorker(wIdx))
+          );
 
           const allOrderedParsed: { heading?: string; paragraphs: string[] }[] = [];
           for (const r of segResults) {
