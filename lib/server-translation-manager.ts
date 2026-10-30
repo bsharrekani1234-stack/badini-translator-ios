@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
 import { Type } from '@google/genai';
@@ -26,7 +27,31 @@ export interface ServerTranslationJob {
   error?: string;
 }
 
-const DATA_DIR = path.join(process.cwd(), '.data');
+export function resolveWritableTranslationDataDir(): string {
+  const cwd = process.cwd();
+  if (!cwd.startsWith('/var/task')) {
+    try {
+      const localDir = path.join(cwd, '.data');
+      if (!fs.existsSync(localDir)) {
+        fs.mkdirSync(localDir, { recursive: true });
+      }
+      return localDir;
+    } catch {
+      // Fall back to os.tmpdir()
+    }
+  }
+  const tmpDir = path.join(os.tmpdir(), 'badini-translation-jobs');
+  try {
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+  } catch {
+    // ignore
+  }
+  return tmpDir;
+}
+
+const DATA_DIR = resolveWritableTranslationDataDir();
 const JOBS_META_PATH = path.join(DATA_DIR, 'translation-jobs.json');
 
 declare global {

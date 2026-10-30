@@ -1522,12 +1522,234 @@ export default function BadiniBookTranslatorPage() {
     return uploadId;
   };
 
+  // Split MP3 or decode other large audio files in browser memory into ~2MB segments so they can be
+  // transcribed in parallel via stateless HTTP requests (100% immune to /var/task read-only disk or serverless freezes)
+  const prepareClientAudioSegments = async (
+    file: File,
+    fileBytes: Uint8Array
+  ): Promise<{ bytes: Uint8Array; mimeType: string }[]> => {
+    const TARGET_CHUNK_BYTES = 2000 * 1024; // ~2.0 MB per segment
+    const lowerName = file.name.toLowerCase();
+    const isMp3 =
+      lowerName.endsWith('.mp3') || file.type === 'audio/mpeg' || file.type === 'audio/mp3';
+
+    if (fileBytes.byteLength <= TARGET_CHUNK_BYTES * 1.15) {
+      return [
+        {
+          bytes: fileBytes,
+          mimeType: isMp3 ? 'audio/mp3' : file.type || 'audio/mp4',
+        },
+      ];
+    }
+
+    if (isMp3) {
+      const chunks: { bytes: Uint8Array; mimeType: string }[] = [];
+      let offset = 0;
+      while (offset < fileBytes.byteLength) {
+        let nextEnd = Math.min(fileBytes.byteLength, offset + TARGET_CHUNK_BYTES);
+        if (nextEnd < fileBytes.byteLength) {
+          const searchLimit = Math.min(fileBytes.byteLength - 2, nextEnd + 8192);
+          for (let pos = nextEnd; pos < searchLimit; pos++) {
+            if (fileBytes[pos] === 0xff && (fileBytes[pos + 1] & 0xe0) === 0xe0) {
+              nextEnd = pos;
+              break;
+            }
+          }
+        }
+        if (nextEnd <= offset) {
+          nextEnd = Math.min(fileBytes.byteLength, offset + TARGET_CHUNK_BYTES);
+        }
+        chunks.push({
+          bytes: fileBytes.subarray(offset, nextEnd),
+          mimeType: 'audio/mp3',
+        });
+        offset = nextEnd;
+      }
+      return chunks;
+    }
+
+    // For large .m4a / .wav / .ogg / .aac (> 2.3 MB), decode via Web Audio API into 120-second 11025Hz mono WAV segments (~2.5MB each)
+    try {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        const decoded = await ctx.decodeAudioData(fileBytes.slice().buffer as ArrayBuffer);
+        void ctx.close();
+        const targetRate = 11025;
+        const totalDuration = decoded.duration;
+        const segDuration = 120; // 2 minutes per WAV segment (~2.5 MB at 11025Hz 16-bit mono)
+        const numSegs = Math.max(1, Math.ceil(totalDuration / segDuration));
+        const srcData = decoded.getChannelData(0);
+        const srcRate = decoded.sampleRate;
+        const wavSegments: { bytes: Uint8Array; mimeType: string }[] = [];
+
+        for (let s = 0; s < numSegs; s++) {
+          const startSec = s * segDuration;
+          const endSec = Math.min(totalDuration, (s + 1) * segDuration);
+          const numSamples = Math.max(1, Math.floor((endSec - startSec) * targetRate));
+          const wavBuf = new ArrayBuffer(44 + numSamples * 2);
+          const view = new DataView(wavBuf);
+
+          const writeStr = (off: number, str: string) => {
+            for (let c = 0; c < str.length; c++) view.setUint8(off + c, str.charCodeAt(c));
+          };
+          writeStr(0, 'RIFF');
+          view.setUint32(4, 36 + numSamples * 2, true);
+          writeStr(8, 'WAVE');
+          writeStr(12, 'fmt ');
+          view.setUint32(16, 16, true);
+          view.setUint16(20, 1, true);
+          view.setUint16(22, 1, true);
+          view.setUint32(24, targetRate, true);
+          view.setUint32(28, targetRate * 2, true);
+          view.setUint16(32, 2, true);
+          view.setUint16(34, 16, true);
+          writeStr(36, 'data');
+          view.setUint32(40, numSamples * 2, true);
+
+          for (let k = 0; k < numSamples; k++) {
+            const srcIdx = Math.min(
+              srcData.length - 1,
+              Math.floor((startSec + k / targetRate) * srcRate)
+            );
+            const sample = Math.max(-1, Math.min(1, srcData[srcIdx] || 0));
+            view.setInt16(44 + k * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+          }
+
+          wavSegments.push({
+            bytes: new Uint8Array(wavBuf),
+            mimeType: 'audio/wav',
+          });
+        }
+
+        if (wavSegments.length > 0) {
+          return wavSegments;
+        }
+      }
+    } catch {
+      // Fallback to server job if browser AudioContext fails
+    }
+
+    return [];
+  };
+
+  // Assemble BookPageData[] from transcribed segment pages
+  const assembleBookPagesFromSegmentPages = (
+    allParsedPages: { heading?: string; paragraphs: string[] }[],
+    mode: 'new' | 'append',
+    startPageNumber: number,
+    bookTitle: string,
+    lessonTitle: string,
+    speakerName: string
+  ): BookPageData[] => {
+    const bookPages: BookPageData[] = [];
+
+    if (mode === 'new') {
+      const cleanBookTitle = bookTitle.trim() || 'پەرتووکا دەنگی یا رێکخستی';
+      const cleanLesson = lessonTitle.trim();
+      const coverTitleLines =
+        cleanLesson && !cleanBookTitle.includes(cleanLesson)
+          ? [cleanBookTitle, cleanLesson]
+          : [cleanBookTitle];
+
+      bookPages.push({
+        pageNumber: 1,
+        showHeader: false,
+        blocks: [
+          {
+            type: 'cover',
+            kicker: 'پەرتووکا دەنگی یا نڤیسای',
+            titleLines: coverTitleLines,
+            compilerLabel: 'وانەبێژ',
+            compilerName: speakerName,
+            verse: '﴿ وَقُل رَّبِّ زِدْنِي عِلْمًا ﴾',
+            verseRef: '[طه: ١١٤]',
+          },
+        ],
+      });
+
+      allParsedPages.forEach((p, idx) => {
+        const pageNum = idx + 2;
+        const blocks: BookPageData['blocks'] = [];
+        if (idx === 0) {
+          blocks.push({
+            type: 'heading',
+            text: lessonTitle
+              ? `${lessonTitle} — بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ`
+              : 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ',
+            align: 'center',
+            size: 'lg',
+          });
+        }
+        if (p.heading && p.heading.trim()) {
+          blocks.push({
+            type: 'heading',
+            text: p.heading.trim(),
+            align: 'center',
+            size: 'md',
+          });
+        }
+        for (const para of p.paragraphs || []) {
+          if (para && para.trim()) {
+            blocks.push({
+              type: 'paragraph',
+              text: para.trim(),
+            });
+          }
+        }
+        bookPages.push({
+          pageNumber: pageNum,
+          showHeader: true,
+          blocks,
+        });
+      });
+    } else {
+      allParsedPages.forEach((p, idx) => {
+        const pageNum = startPageNumber + idx;
+        const blocks: BookPageData['blocks'] = [];
+        if (idx === 0) {
+          blocks.push({
+            type: 'heading',
+            text: lessonTitle || bookTitle || 'وانا نوێ یا پێکڤەگرێدای',
+            align: 'center',
+            size: 'lg',
+          });
+        }
+        if (p.heading && p.heading.trim() && p.heading.trim() !== lessonTitle) {
+          blocks.push({
+            type: 'heading',
+            text: p.heading.trim(),
+            align: 'center',
+            size: 'md',
+          });
+        }
+        for (const para of p.paragraphs || []) {
+          if (para && para.trim()) {
+            blocks.push({
+              type: 'paragraph',
+              text: para.trim(),
+            });
+          }
+        }
+        bookPages.push({
+          pageNumber: pageNum,
+          showHeader: true,
+          blocks,
+        });
+      });
+    }
+
+    return bookPages;
+  };
+
   // Convert one or multiple uploaded audio files verbatim into a standalone book (default) or append to an existing book
   const handleConvertAudioToBook = async () => {
     if (selectedAudioFiles.length === 0 || isConvertingAudio) return;
     setAudioConvertError(null);
-    setAudioProgressPercent(1);
-    setAudioConvertStatus('ئامادەکرنا دەنگی بۆ هنارتنا بلەز (١٪)...');
+    setAudioProgressPercent(5);
+    setAudioConvertStatus('ئامادەکرن و دابەشکرنا بلەز یا دەنگی (٥٪)...');
     setIsConvertingAudio(true);
 
     try {
@@ -1556,145 +1778,248 @@ export default function BadiniBookTranslatorPage() {
             ? audioLessonTitleInput.trim()
             : getKurdishLessonTitle(nextLessonIndex);
 
+        const effectiveBookTitle =
+          audioBookTitleInput.trim() ||
+          (fileMode === 'append' ? existingBook?.title : '') ||
+          cleanFileName ||
+          'پەرتووکا دەنگی یا رێکخستی';
+        const effectiveSpeaker = audioSpeakerInput.trim() || 'مامۆستا مەلا رەمەزان';
+
         const fileBytes = new Uint8Array(await file.arrayBuffer());
-        const uploadId = await uploadBufferInChunks(
-          '/api/audio-to-book',
-          fileBytes,
-          file.name,
-          file.type || 'audio/mp4',
-          (sent, total) => {
-            // Upload phase represents 1%..20% of the total conversion so percentage and progress bar move together
-            const overallUploadPct = Math.max(
-              1,
-              Math.min(20, Math.round((sent / Math.max(1, total)) * 20))
-            );
-            setAudioProgressPercent(overallUploadPct);
-            setAudioConvertStatus(
-              `دەنگێ ${toEasternArabicNumerals(i + 1)} (${
-                file.name
-              }): هنارتنا بلەز بۆ سێرڤەری (${toEasternArabicNumerals(
-                overallUploadPct
-              )}٪)...`
-            );
-          }
-        );
-
-        let startData: Record<string, unknown> | null = null;
-        let lastStartErr: unknown = null;
-        for (let attempt = 0; attempt < 4; attempt++) {
-          try {
-            const startRes = await fetch('/api/audio-to-book', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                action: 'start-job',
-                uploadId,
-                fileName: file.name,
-                mimeType: file.type || 'audio/mp4',
-                mode: fileMode,
-                startPageNumber: startPageNum,
-                bookTitle:
-                  audioBookTitleInput.trim() ||
-                  (fileMode === 'append' ? existingBook?.title : '') ||
-                  cleanFileName ||
-                  'پەرتووکا دەنگی یا رێکخستی',
-                lessonTitle: computedLessonTitle,
-                speakerName: audioSpeakerInput.trim() || 'مامۆستا مەلا رەمەزان',
-              }),
-            });
-            const parsedStart = await safeParseJson(startRes);
-            if (!startRes.ok || parsedStart.error) {
-              throw new Error(parsedStart.error || 'شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
-            }
-            startData = parsedStart;
-            lastStartErr = null;
-            break;
-          } catch (err) {
-            lastStartErr = err;
-            await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
-          }
-        }
-
-        if (!startData) {
-          throw lastStartErr || new Error('شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
-        }
-
-        setAudioProgressPercent((prev) => Math.max(prev, 22));
-        setAudioConvertStatus(
-          `دەنگ گەهشتە سێرڤەری — دابەشکرن و نڤیسینا بلەز دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
-        );
+        const clientSegments = await prepareClientAudioSegments(file, fileBytes);
 
         let returnedPages: BookPageData[] = [];
-        const startJobObj = startData.job as { id?: string } | undefined;
 
-        if (Array.isArray(startData.pages) && startData.pages.length > 0) {
-          returnedPages = startData.pages as BookPageData[];
+        if (clientSegments.length > 0) {
+          const totalSegs = clientSegments.length;
+          const segResults: ({ heading?: string; paragraphs: string[] }[] | null)[] = new Array(
+            totalSegs
+          ).fill(null);
+          let completedSegs = 0;
+
+          setAudioProgressPercent(15);
+          setAudioConvertStatus(
+            `دەنگ هاتە دابەشکرن بۆ ${toEasternArabicNumerals(
+              totalSegs
+            )} پشکان — نڤیسینا بلەز دەستپێکر (${toEasternArabicNumerals(15)}٪)...`
+          );
+
+          const SEG_CONCURRENCY = 5;
+          for (let s = 0; s < totalSegs; s += SEG_CONCURRENCY) {
+            const batchIndices: number[] = [];
+            for (let b = s; b < Math.min(totalSegs, s + SEG_CONCURRENCY); b++) {
+              batchIndices.push(b);
+            }
+
+            await Promise.all(
+              batchIndices.map(async (segIdx) => {
+                const seg = clientSegments[segIdx];
+                let lastSegErr: unknown = null;
+                for (let attempt = 0; attempt < 4; attempt++) {
+                  try {
+                    const fd = new FormData();
+                    fd.append('action', 'transcribe-segment');
+                    fd.append('chunkIndex', String(segIdx));
+                    fd.append('totalSegments', String(totalSegs));
+                    fd.append('fileName', file.name);
+                    fd.append('mimeType', seg.mimeType);
+                    fd.append('bookTitle', effectiveBookTitle);
+                    fd.append('lessonTitle', computedLessonTitle);
+                    fd.append('speakerName', effectiveSpeaker);
+                    fd.append(
+                      'chunk',
+                      new Blob([seg.bytes.slice().buffer as ArrayBuffer], {
+                        type: seg.mimeType,
+                      }),
+                      `seg_${segIdx}.mp3`
+                    );
+
+                    const res = await fetch('/api/audio-to-book', {
+                      method: 'POST',
+                      body: fd,
+                    });
+                    const parsed = await safeParseJson(res);
+                    if (!res.ok || parsed.error || !Array.isArray(parsed.pages)) {
+                      throw new Error(parsed.error || 'شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
+                    }
+                    segResults[segIdx] = parsed.pages as {
+                      heading?: string;
+                      paragraphs: string[];
+                    }[];
+                    lastSegErr = null;
+                    break;
+                  } catch (err) {
+                    lastSegErr = err;
+                    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+                  }
+                }
+                if (lastSegErr) {
+                  throw lastSegErr;
+                }
+
+                completedSegs++;
+                const pct = Math.min(
+                  98,
+                  15 + Math.round((completedSegs / Math.max(1, totalSegs)) * 83)
+                );
+                setAudioProgressPercent((prev) => Math.max(prev, pct));
+                setAudioConvertStatus(
+                  `پشکا ${toEasternArabicNumerals(completedSegs)} ژ ${toEasternArabicNumerals(
+                    totalSegs
+                  )} ب سەرکەفتیانە هاتە نڤیسین (${toEasternArabicNumerals(pct)}٪)...`
+                );
+              })
+            );
+          }
+
+          const allOrderedParsed: { heading?: string; paragraphs: string[] }[] = [];
+          for (const r of segResults) {
+            if (r) allOrderedParsed.push(...r);
+          }
+          returnedPages = assembleBookPagesFromSegmentPages(
+            allOrderedParsed,
+            fileMode,
+            startPageNum,
+            effectiveBookTitle,
+            computedLessonTitle,
+            effectiveSpeaker
+          );
           setAudioProgressPercent(100);
-        } else if (startJobObj?.id) {
-          const jobId = startJobObj.id;
-          let consecutivePollErrors = 0;
-          while (true) {
-            await new Promise((r) => setTimeout(r, 900));
+        } else {
+          // Fallback to server job if client segmentation returned empty
+          const uploadId = await uploadBufferInChunks(
+            '/api/audio-to-book',
+            fileBytes,
+            file.name,
+            file.type || 'audio/mp4',
+            (sent, total) => {
+              const overallUploadPct = Math.max(
+                1,
+                Math.min(20, Math.round((sent / Math.max(1, total)) * 20))
+              );
+              setAudioProgressPercent(overallUploadPct);
+              setAudioConvertStatus(
+                `دەنگێ ${toEasternArabicNumerals(i + 1)} (${
+                  file.name
+                }): هنارتنا بلەز بۆ سێرڤەری (${toEasternArabicNumerals(
+                  overallUploadPct
+                )}٪)...`
+              );
+            }
+          );
+
+          let startData: Record<string, unknown> | null = null;
+          let lastStartErr: unknown = null;
+          for (let attempt = 0; attempt < 4; attempt++) {
             try {
-              const pollRes = await fetch(`/api/audio-to-book?jobId=${encodeURIComponent(jobId)}`, {
-                cache: 'no-store',
+              const startRes = await fetch('/api/audio-to-book', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  action: 'start-job',
+                  uploadId,
+                  fileName: file.name,
+                  mimeType: file.type || 'audio/mp4',
+                  mode: fileMode,
+                  startPageNumber: startPageNum,
+                  bookTitle: effectiveBookTitle,
+                  lessonTitle: computedLessonTitle,
+                  speakerName: effectiveSpeaker,
+                }),
               });
-              if (!pollRes.ok) {
+              const parsedStart = await safeParseJson(startRes);
+              if (!startRes.ok || parsedStart.error) {
+                throw new Error(parsedStart.error || 'شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
+              }
+              startData = parsedStart;
+              lastStartErr = null;
+              break;
+            } catch (err) {
+              lastStartErr = err;
+              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+            }
+          }
+
+          if (!startData) {
+            throw lastStartErr || new Error('شاشی د دەستپێکرنا نڤیسینا دەنگی دا چێبوو');
+          }
+
+          setAudioProgressPercent((prev) => Math.max(prev, 22));
+          setAudioConvertStatus(
+            `دەنگ گەهشتە سێرڤەری — دابەشکرن و نڤیسینا بلەز دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
+          );
+
+          const startJobObj = startData.job as { id?: string } | undefined;
+
+          if (Array.isArray(startData.pages) && startData.pages.length > 0) {
+            returnedPages = startData.pages as BookPageData[];
+            setAudioProgressPercent(100);
+          } else if (startJobObj?.id) {
+            const jobId = startJobObj.id;
+            let consecutivePollErrors = 0;
+            while (true) {
+              await new Promise((r) => setTimeout(r, 900));
+              try {
+                const pollRes = await fetch(`/api/audio-to-book?jobId=${encodeURIComponent(jobId)}`, {
+                  cache: 'no-store',
+                });
+                if (!pollRes.ok) {
+                  consecutivePollErrors++;
+                  if (consecutivePollErrors > 25) {
+                    throw new Error('پەیوەندی دگەل سێرڤەری پچیا، تکایە دووبارە هەول بدە.');
+                  }
+                  continue;
+                }
+                const pollData = await safeParseJson(pollRes);
+                consecutivePollErrors = 0;
+                const job = pollData?.job;
+                if (!job) continue;
+
+                const serverPct =
+                  typeof job.progressPercent === 'number' && job.progressPercent > 0
+                    ? job.progressPercent
+                    : job.totalSegments > 0
+                    ? Math.min(98, 25 + Math.round((job.doneSegments / job.totalSegments) * 73))
+                    : 25;
+
+                setAudioProgressPercent((prevPct) => {
+                  const syncedPct =
+                    job.status === 'completed' ? 100 : Math.min(98, Math.max(prevPct, serverPct));
+                  if (job.statusMessage) {
+                    const syncedText = String(job.statusMessage).replace(
+                      /\([٠-٩0-9]+٪\)/g,
+                      `(${toEasternArabicNumerals(syncedPct)}٪)`
+                    );
+                    setAudioConvertStatus(syncedText);
+                  }
+                  return syncedPct;
+                });
+
+                if (job.status === 'completed' && Array.isArray(job.pages) && job.pages.length > 0) {
+                  returnedPages = job.pages as BookPageData[];
+                  setAudioProgressPercent(100);
+                  break;
+                }
+                if (job.status === 'error' || job.status === 'stopped') {
+                  throw new Error(
+                    formatFriendlyError(
+                      job.error || job.statusMessage,
+                      'شاشی د نڤیسینا دەنگی دا چێبوو'
+                    )
+                  );
+                }
+              } catch (pollErr) {
+                if (
+                  pollErr instanceof Error &&
+                  !pollErr.message.toLowerCase().includes('failed to fetch') &&
+                  !pollErr.message.includes('پەیوەندی دگەل سێرڤەری بۆ چرکەیەکێ لاواز بوو')
+                ) {
+                  throw pollErr;
+                }
                 consecutivePollErrors++;
                 if (consecutivePollErrors > 25) {
-                  throw new Error('پەیوەندی دگەل سێرڤەری پچیا، تکایە دووبارە هەول بدە.');
+                  throw new Error('پەیوەندی دگەل سێرڤەری بۆ دەمەکێ درێژ لاواز بوو، تکایە دووبارە هەول بدە.');
                 }
-                continue;
-              }
-              const pollData = await safeParseJson(pollRes);
-              consecutivePollErrors = 0;
-              const job = pollData?.job;
-              if (!job) continue;
-
-              const serverPct =
-                typeof job.progressPercent === 'number' && job.progressPercent > 0
-                  ? job.progressPercent
-                  : job.totalSegments > 0
-                  ? Math.min(98, 25 + Math.round((job.doneSegments / job.totalSegments) * 73))
-                  : 25;
-
-              setAudioProgressPercent((prevPct) => {
-                const syncedPct =
-                  job.status === 'completed' ? 100 : Math.min(98, Math.max(prevPct, serverPct));
-                if (job.statusMessage) {
-                  const syncedText = String(job.statusMessage).replace(
-                    /\([٠-٩0-9]+٪\)/g,
-                    `(${toEasternArabicNumerals(syncedPct)}٪)`
-                  );
-                  setAudioConvertStatus(syncedText);
-                }
-                return syncedPct;
-              });
-
-              if (job.status === 'completed' && Array.isArray(job.pages) && job.pages.length > 0) {
-                returnedPages = job.pages as BookPageData[];
-                setAudioProgressPercent(100);
-                break;
-              }
-              if (job.status === 'error' || job.status === 'stopped') {
-                throw new Error(
-                  formatFriendlyError(
-                    job.error || job.statusMessage,
-                    'شاشی د نڤیسینا دەنگی دا چێبوو'
-                  )
-                );
-              }
-            } catch (pollErr) {
-              if (
-                pollErr instanceof Error &&
-                !pollErr.message.toLowerCase().includes('failed to fetch') &&
-                !pollErr.message.includes('پەیوەندی دگەل سێرڤەری بۆ چرکەیەکێ لاواز بوو')
-              ) {
-                throw pollErr;
-              }
-              consecutivePollErrors++;
-              if (consecutivePollErrors > 25) {
-                throw new Error('پەیوەندی دگەل سێرڤەری بۆ دەمەکێ درێژ لاواز بوو، تکایە دووبارە هەول بدە.');
               }
             }
           }
@@ -2363,6 +2688,19 @@ export default function BadiniBookTranslatorPage() {
     setEditorStatusBanner(null);
 
     try {
+      const allBooksSummary = allBooks.map((b) => ({
+        id: b.id,
+        title: b.title,
+        totalPages: b.pages.length,
+        lessons: (b.audioTracks || []).map((t, idx) => ({
+          lessonNumber: idx + 1,
+          id: t.id,
+          title: t.title,
+          startPage: t.startPage,
+          endPage: t.endPage,
+        })),
+      }));
+
       const res = await fetch('/api/chat-fix-page', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2374,6 +2712,11 @@ export default function BadiniBookTranslatorPage() {
           bookTitle: activeBookDesign.customHeaderTitle || activeBook.headerTitle,
           currentPage,
           totalPages: maxPageCount,
+          currentPageData,
+          allBooksSummary,
+          activeBookId: activeBook.id,
+          currentFontId: bookFontId,
+          currentFontSizePt: fontSizePt,
           history: recentHistoryPayload,
         }),
       });
@@ -2384,21 +2727,118 @@ export default function BadiniBookTranslatorPage() {
       }
 
       let didChangePages = false;
+      let workingPages = [...pages];
 
-      // 1. Handle Page Deletion if requested by User
-      if (Array.isArray(data.deletePageNumbers) && data.deletePageNumbers.length > 0) {
-        const toDeleteSet = new Set<number>(data.deletePageNumbers);
-        const remaining = pages.filter((p) => !toDeleteSet.has(p.pageNumber));
-        if (remaining.length >= 1 && remaining.length < pages.length) {
-          replacePagesInActiveBook(remaining);
-          setCurrentPage((prev) => Math.min(prev, remaining.length));
+      // 1. Handle Direct Current Page Content Edits (Blocks / Footnotes)
+      if (
+        (Array.isArray(data.updatedCurrentPageBlocks) && data.updatedCurrentPageBlocks.length > 0) ||
+        Array.isArray(data.updatedCurrentPageFootnotes)
+      ) {
+        workingPages = workingPages.map((p) => {
+          if (p.pageNumber !== currentPage) return p;
+          return {
+            ...p,
+            blocks:
+              Array.isArray(data.updatedCurrentPageBlocks) &&
+              data.updatedCurrentPageBlocks.length > 0
+                ? data.updatedCurrentPageBlocks
+                : p.blocks,
+            footnotes: Array.isArray(data.updatedCurrentPageFootnotes)
+              ? data.updatedCurrentPageFootnotes
+              : p.footnotes,
+          };
+        });
+        didChangePages = true;
+      }
+
+      // 2. Handle Inserting a New Page after Current Page
+      if (
+        (typeof data.insertNewPageHeading === 'string' && data.insertNewPageHeading.trim()) ||
+        (Array.isArray(data.insertNewPageParagraphs) && data.insertNewPageParagraphs.length > 0)
+      ) {
+        const newBlocks: BookPageData['blocks'] = [];
+        if (typeof data.insertNewPageHeading === 'string' && data.insertNewPageHeading.trim()) {
+          newBlocks.push({
+            type: 'heading',
+            text: data.insertNewPageHeading.trim(),
+            align: 'center',
+            size: 'md',
+          });
+        }
+        if (Array.isArray(data.insertNewPageParagraphs)) {
+          for (const para of data.insertNewPageParagraphs) {
+            if (typeof para === 'string' && para.trim()) {
+              newBlocks.push({
+                type: 'paragraph',
+                text: para.trim(),
+                align: 'justify',
+              });
+            }
+          }
+        }
+        if (newBlocks.length > 0) {
+          const insertIdx = Math.min(workingPages.length, Math.max(0, currentPage));
+          const insertedPage: BookPageData = {
+            pageNumber: insertIdx + 1,
+            showHeader: true,
+            blocks: newBlocks,
+          };
+          workingPages = [
+            ...workingPages.slice(0, insertIdx),
+            insertedPage,
+            ...workingPages.slice(insertIdx),
+          ].map((p, idx) => ({ ...p, pageNumber: idx + 1 }));
           didChangePages = true;
         }
       }
 
-      // 2. Handle Removing or Adding Cover if requested by User
+      // 3. Handle Find & Replace across all pages of Active Book
+      if (
+        typeof data.findText === 'string' &&
+        data.findText.trim() &&
+        typeof data.replaceText === 'string'
+      ) {
+        const needle = data.findText;
+        const replacement = data.replaceText;
+        workingPages = workingPages.map((p) => ({
+          ...p,
+          blocks: p.blocks.map((b) => {
+            if (b.type === 'paragraph' || b.type === 'heading') {
+              return { ...b, text: b.text.split(needle).join(replacement) };
+            }
+            if (b.type === 'cover') {
+              return {
+                ...b,
+                kicker: b.kicker.split(needle).join(replacement),
+                titleLines: b.titleLines.map((l) => l.split(needle).join(replacement)),
+                verse: b.verse.split(needle).join(replacement),
+              };
+            }
+            return b;
+          }),
+          footnotes: p.footnotes?.map((f) => f.split(needle).join(replacement)),
+        }));
+        didChangePages = true;
+      }
+
+      // 4. Handle Page Deletion if requested by User
+      if (Array.isArray(data.deletePageNumbers) && data.deletePageNumbers.length > 0) {
+        const toDeleteSet = new Set<number>(data.deletePageNumbers);
+        const remaining = workingPages.filter((p) => !toDeleteSet.has(p.pageNumber));
+        if (remaining.length >= 1 && remaining.length < workingPages.length) {
+          workingPages = remaining.map((p, idx) => ({ ...p, pageNumber: idx + 1 }));
+          setCurrentPage((prev) => Math.min(prev, workingPages.length));
+          didChangePages = true;
+        }
+      }
+
+      if (didChangePages) {
+        replacePagesInActiveBook(workingPages);
+      }
+
+      // 5. Handle Removing or Adding Cover if requested by User
       if (data.removeCover) {
-        const p1 = pages[0];
+        const p1 = workingPages[0];
         if (p1 && p1.blocks.some((b) => b.type === 'cover')) {
           const nonCoverBlocks = p1.blocks.filter((b) => b.type !== 'cover');
           if (nonCoverBlocks.length > 0) {
@@ -2406,17 +2846,29 @@ export default function BadiniBookTranslatorPage() {
               ...prevP1,
               blocks: nonCoverBlocks,
             }));
-          } else if (pages.length > 1) {
-            replacePagesInActiveBook(pages.slice(1));
+          } else if (workingPages.length > 1) {
+            replacePagesInActiveBook(workingPages.slice(1));
           }
           didChangePages = true;
         }
-      } else if (data.addCover) {
+      } else if (data.addCover || data.touchedCover) {
         handleEnsureCoverOnPage1();
         didChangePages = true;
       }
 
-      // 3. Handle Recommended Font Family & Font Size
+      // 6. Handle Renaming Book Title
+      if (typeof data.renameBookTitle === 'string' && data.renameBookTitle.trim()) {
+        const newBookName = data.renameBookTitle.trim();
+        setCustomBooks((prev) =>
+          prev.map((b) =>
+            b.id === activeBook.id
+              ? { ...b, title: newBookName, headerTitle: newBookName }
+              : b
+          )
+        );
+      }
+
+      // 7. Handle Recommended Font Family & Font Size
       if (
         data.recommendedFontId &&
         BOOK_FONT_OPTIONS.some((f) => f.id === data.recommendedFontId)
@@ -2427,58 +2879,151 @@ export default function BadiniBookTranslatorPage() {
         setFontSizePt(data.recommendedFontSizePt);
       }
 
-      // 4. Handle Design, Header Style, Header Title, Colors, Frame, and Cover Updates
+      // 8. Handle Design, Header Style, Header Title, Colors, Frame, Line Spacing, and Cover Updates
       if (data.didUpdateDesign && data.updatedDesign) {
         const updatedCfg = data.updatedDesign as BookDesignConfig;
         updateActiveBookDesign(updatedCfg);
 
-        // If user switched to a non-cover header style (like 'chamfered-boxes') while on Page 1, jump to Page 2 so they immediately see the running header!
-        if (
+        // If user modified the Cover, ensure Page 1 has a cover block and jump to Page 1 if requested
+        if (data.touchedCover && updatedCfg.cover) {
+          const c = updatedCfg.cover;
+          updatePageInActiveBook(1, (p1) => {
+            const hasCoverBlock = p1.blocks.some((b) => b.type === 'cover');
+            if (!hasCoverBlock) return p1;
+            return {
+              ...p1,
+              blocks: p1.blocks.map((b) => {
+                if (b.type !== 'cover') return b;
+                return {
+                  ...b,
+                  kicker: c.kicker !== undefined && c.kicker !== '' ? c.kicker : b.kicker,
+                  titleLines:
+                    c.titleLines && c.titleLines.length > 0 ? c.titleLines : b.titleLines,
+                  compilerLabel:
+                    c.compilerLabel !== undefined && c.compilerLabel !== ''
+                      ? c.compilerLabel
+                      : b.compilerLabel,
+                  compilerName:
+                    c.compilerName !== undefined && c.compilerName !== ''
+                      ? c.compilerName
+                      : b.compilerName,
+                  verse: c.verse !== undefined && c.verse !== '' ? c.verse : b.verse,
+                  verseRef:
+                    c.verseRef !== undefined && c.verseRef !== '' ? c.verseRef : b.verseRef,
+                };
+              }),
+            };
+          });
+        } else if (
           updatedCfg.headerStyle &&
           updatedCfg.headerStyle !== activeBookDesign.headerStyle &&
           currentPage === 1 &&
           maxPageCount >= 2
         ) {
+          // Jump to Page 2 when changing running header style while on Page 1 so the user sees it immediately
           setCurrentPage(2);
-        }
-
-        // Also sync cover block on Page 1 if the user/bot customized cover text fields
-        if (updatedCfg.cover) {
-          const c = updatedCfg.cover;
-          if (c.kicker || (c.titleLines && c.titleLines.length > 0) || c.compilerName || c.verse) {
-            updatePageInActiveBook(1, (p1) => {
-              const hasCoverBlock = p1.blocks.some((b) => b.type === 'cover');
-              if (!hasCoverBlock) return p1;
-              return {
-                ...p1,
-                blocks: p1.blocks.map((b) => {
-                  if (b.type !== 'cover') return b;
-                  return {
-                    ...b,
-                    kicker: c.kicker !== undefined && c.kicker !== '' ? c.kicker : b.kicker,
-                    titleLines:
-                      c.titleLines && c.titleLines.length > 0 ? c.titleLines : b.titleLines,
-                    compilerLabel:
-                      c.compilerLabel !== undefined && c.compilerLabel !== ''
-                        ? c.compilerLabel
-                        : b.compilerLabel,
-                    compilerName:
-                      c.compilerName !== undefined && c.compilerName !== ''
-                        ? c.compilerName
-                        : b.compilerName,
-                    verse: c.verse !== undefined && c.verse !== '' ? c.verse : b.verse,
-                    verseRef:
-                      c.verseRef !== undefined && c.verseRef !== '' ? c.verseRef : b.verseRef,
-                  };
-                }),
-              };
-            });
-          }
         }
 
         setEditorStatusBanner(
           data.reply || 'دیزاین و داخازیێن تە ب سەرکەفتیانە هاتنە جێبەجێکرن!'
         );
+      }
+
+      // 9. Handle Website-Wide Library & Navigation Commands
+      if (typeof data.deleteLessonNumber === 'number' && data.deleteLessonNumber >= 1) {
+        const targetTrack = activeBook.audioTracks?.[data.deleteLessonNumber - 1];
+        if (targetTrack) {
+          handleDeleteLessonTrack(activeBook.id, targetTrack.id);
+        }
+      }
+
+      if (typeof data.deleteBookId === 'string' && data.deleteBookId.trim()) {
+        handleDeleteCustomBook(data.deleteBookId.trim());
+      }
+
+      if (data.restoreBuiltInBooks) {
+        handleRestoreBuiltInBooks();
+      }
+
+      if (
+        typeof data.mergePrimaryBookId === 'string' &&
+        data.mergePrimaryBookId.trim() &&
+        typeof data.mergeSecondaryBookId === 'string' &&
+        data.mergeSecondaryBookId.trim()
+      ) {
+        const pBook = allBooks.find((b) => b.id === data.mergePrimaryBookId.trim());
+        const sBook = allBooks.find((b) => b.id === data.mergeSecondaryBookId.trim());
+        if (pBook && sBook && pBook.id !== sBook.id) {
+          const secContent = sBook.pages.filter(
+            (p) => !p.blocks.some((b) => b.type === 'cover')
+          );
+          const pagesToAppend = secContent.length > 0 ? secContent : sBook.pages;
+          const startP = pBook.pages.length + 1;
+          const renumberedAppended: BookPageData[] = pagesToAppend.map((p, idx) => ({
+            ...p,
+            pageNumber: startP + idx,
+            showHeader: true,
+          }));
+          const mergedPages = [...pBook.pages, ...renumberedAppended];
+          const newTrack: AudioLessonTrack = {
+            id: `merged-track-${Date.now()}`,
+            title: sBook.title,
+            startPage: startP,
+            endPage: mergedPages.length,
+          };
+          const mergedTracks = [...(pBook.audioTracks || []), newTrack];
+          if (pBook.id === SHAKHSIYA_QAWIYA_BOOK_ID) {
+            setShakhsiyaBookPages(mergedPages);
+            setShakhsiyaAudioTracks(mergedTracks);
+          } else if (pBook.id === QAWAID_LESSON1_BOOK_ID) {
+            setQawaidBookPages(mergedPages);
+            setQawaidAudioTracks(mergedTracks);
+          } else if (pBook.id === DEFAULT_BOOK_ID) {
+            setDefaultBookPages(mergedPages);
+          } else {
+            setCustomBooks((prev) =>
+              prev.map((b) =>
+                b.id === pBook.id
+                  ? {
+                      ...b,
+                      totalPages: mergedPages.length,
+                      pages: mergedPages,
+                      audioTracks: mergedTracks,
+                    }
+                  : b
+              )
+            );
+          }
+          setActiveBookId(pBook.id);
+          setCurrentPage(startP);
+        }
+      }
+
+      if (typeof data.switchToBookId === 'string' && data.switchToBookId.trim()) {
+        const targetBook = allBooks.find((b) => b.id === data.switchToBookId.trim());
+        if (targetBook) {
+          setActiveBookId(targetBook.id);
+          setCurrentPage(1);
+        }
+      }
+
+      if (typeof data.goToPageNumber === 'number' && data.goToPageNumber >= 1) {
+        setCurrentPage(Math.min(maxPageCount, Math.max(1, data.goToPageNumber)));
+      }
+
+      if (
+        data.navigateToSection === 'reader' ||
+        data.navigateToSection === 'audio' ||
+        data.navigateToSection === 'library' ||
+        data.navigateToSection === 'export'
+      ) {
+        setActiveSection(data.navigateToSection);
+      }
+
+      if (data.triggerExport === 'pdf') {
+        void handleDownloadFullPdf();
+      } else if (data.triggerExport === 'word') {
+        void handleDownloadFullWord();
       }
 
       const assistantMsg: ChatMessage = {

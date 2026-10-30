@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -34,7 +35,32 @@ export interface ServerAudioBookJob {
   error?: string;
 }
 
-const DATA_DIR = path.join(process.cwd(), '.data', 'audio-jobs');
+function resolveWritableAudioDataDir(): string {
+  const cwd = process.cwd();
+  // On Vercel / AWS Lambda (/var/task), process.cwd() is read-only; always use os.tmpdir() (/tmp)
+  if (!cwd.startsWith('/var/task')) {
+    try {
+      const localDir = path.join(cwd, '.data', 'audio-jobs');
+      if (!fs.existsSync(localDir)) {
+        fs.mkdirSync(localDir, { recursive: true });
+      }
+      return localDir;
+    } catch {
+      // Fall back to os.tmpdir()
+    }
+  }
+  const tmpDir = path.join(os.tmpdir(), 'badini-audio-jobs');
+  try {
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+  } catch {
+    // ignore
+  }
+  return tmpDir;
+}
+
+const DATA_DIR = resolveWritableAudioDataDir();
 const JOBS_META_PATH = path.join(DATA_DIR, 'audio-jobs.json');
 
 declare global {
@@ -283,7 +309,87 @@ async function transcribeSingleSegment(
   throw new Error('نەشیا دەنگی بکەتە نڤیسین، تکایە جارەکا دی هەول بدە');
 }
 
-function buildBookPagesFromParsed(
+/**
+ * Pure-JS MP3 frame-boundary splitter so large MP3 files can be split into ~2.2MB segments
+ * in memory even in serverless environments (/var/task) where ffmpeg is not installed.
+ */
+export function splitMp3BufferByFrames(buf: Buffer, targetChunkBytes = 2200 * 1024): Buffer[] {
+  if (buf.length <= targetChunkBytes * 1.15) {
+    return [buf];
+  }
+  const chunks: Buffer[] = [];
+  let offset = 0;
+
+  while (offset < buf.length) {
+    let nextEnd = Math.min(buf.length, offset + targetChunkBytes);
+    if (nextEnd < buf.length) {
+      // Scan forward up to 8KB to find an MP3 frame sync word (0xFF followed by 0xE0..0xFF)
+      const searchLimit = Math.min(buf.length - 2, nextEnd + 8192);
+      for (let pos = nextEnd; pos < searchLimit; pos++) {
+        if (buf[pos] === 0xff && (buf[pos + 1] & 0xe0) === 0xe0) {
+          nextEnd = pos;
+          break;
+        }
+      }
+    }
+    if (nextEnd <= offset) {
+      nextEnd = Math.min(buf.length, offset + targetChunkBytes);
+    }
+    chunks.push(buf.subarray(offset, nextEnd));
+    offset = nextEnd;
+  }
+
+  return chunks.length > 0 ? chunks : [buf];
+}
+
+export async function transcribeSingleSegmentPublic(
+  segmentBuffer: Buffer,
+  mimeType: string,
+  segmentIdx: number,
+  totalSegments: number,
+  bookTitle: string,
+  lessonTitle: string,
+  speakerName: string
+): Promise<ParsedSegmentPage[]> {
+  try {
+    return await transcribeSingleSegment(
+      segmentBuffer,
+      mimeType,
+      segmentIdx,
+      totalSegments,
+      bookTitle,
+      lessonTitle,
+      speakerName
+    );
+  } catch (firstErr) {
+    // If segment was too dense and overflowed output tokens, split buffer in half in memory and transcribe both halves
+    if (segmentBuffer.length > 350 * 1024) {
+      const halfTarget = Math.ceil(segmentBuffer.length / 2);
+      const subBuffers = splitMp3BufferByFrames(segmentBuffer, halfTarget);
+      if (subBuffers.length > 1) {
+        const combined: ParsedSegmentPage[] = [];
+        for (const subBuf of subBuffers) {
+          const pages = await transcribeSingleSegment(
+            subBuf,
+            mimeType,
+            segmentIdx,
+            totalSegments,
+            bookTitle,
+            lessonTitle,
+            speakerName
+          );
+          combined.push(...pages);
+        }
+        if (combined.length > 0) {
+          return combined;
+        }
+      }
+    }
+    throw firstErr;
+  }
+}
+
+export function buildBookPagesFromParsed(
   allParsedPages: ParsedSegmentPage[],
   mode: 'new' | 'append',
   startPageNumber: number,
@@ -410,26 +516,48 @@ export async function runServerAudioToBookWorker(
   const jobWorkDir = path.join(DATA_DIR, jobId);
 
   try {
-    ensureAudioDataDir();
-    if (!fs.existsSync(jobWorkDir)) {
-      fs.mkdirSync(jobWorkDir, { recursive: true });
+    let segmentBuffers: { buf: Buffer; mime: string }[] = [];
+    let durationSec = Math.max(60, Math.round((audioBuffer.length / (1024 * 1024)) * 90));
+
+    // Try splitting via ffmpeg in writable tmp directory first; if unavailable or read-only, split in memory
+    try {
+      ensureAudioDataDir();
+      if (!fs.existsSync(jobWorkDir)) {
+        fs.mkdirSync(jobWorkDir, { recursive: true });
+      }
+
+      const ext = path.extname(job.fileName) || '.m4a';
+      const rawInputPath = path.join(jobWorkDir, `input${ext}`);
+      fs.writeFileSync(rawInputPath, audioBuffer);
+
+      job.progressPercent = 22;
+      job.statusMessage = `دابەشکرنا دەنگی بۆ پشکێن بلەز (${toEasternArabic(22)}٪)...`;
+      job.updatedAt = Date.now();
+      persistAudioJobsStore();
+
+      const splitRes = await splitAudioIntoFastSegments(rawInputPath, jobWorkDir);
+      durationSec = splitRes.durationSec;
+
+      if (splitRes.segmentPaths.length > 1 || splitRes.segmentPaths[0] !== rawInputPath) {
+        segmentBuffers = splitRes.segmentPaths.map((p) => ({
+          buf: fs.readFileSync(p),
+          mime: p.endsWith('.mp3') ? 'audio/mp3' : originalMimeType || 'audio/mp3',
+        }));
+      }
+    } catch {
+      // Disk or ffmpeg unavailable — handled below in memory
     }
 
-    const ext = path.extname(job.fileName) || '.m4a';
-    const rawInputPath = path.join(jobWorkDir, `input${ext}`);
-    fs.writeFileSync(rawInputPath, audioBuffer);
+    if (segmentBuffers.length === 0) {
+      const memChunks = splitMp3BufferByFrames(audioBuffer, 2200 * 1024);
+      const effectiveMime =
+        job.fileName.toLowerCase().endsWith('.mp3') || memChunks.length > 1
+          ? 'audio/mp3'
+          : originalMimeType || 'audio/mp3';
+      segmentBuffers = memChunks.map((buf) => ({ buf, mime: effectiveMime }));
+    }
 
-    job.progressPercent = 22;
-    job.statusMessage = `دابەشکرنا دەنگی بۆ پشکێن بلەز (${toEasternArabic(22)}٪)...`;
-    job.updatedAt = Date.now();
-    persistAudioJobsStore();
-
-    const { segmentPaths, durationSec } = await splitAudioIntoFastSegments(
-      rawInputPath,
-      jobWorkDir
-    );
-
-    const totalSegs = segmentPaths.length;
+    const totalSegs = segmentBuffers.length;
     const CONCURRENCY = 6; // Process up to 6 segments simultaneously for fast throughput
     job.totalSegments = totalSegs;
     job.audioDurationSec = durationSec;
@@ -442,82 +570,6 @@ export async function runServerAudioToBookWorker(
     persistAudioJobsStore();
 
     const segmentResults: (ParsedSegmentPage[] | null)[] = new Array(totalSegs).fill(null);
-
-    const transcribeWithSubSplitFallback = async (
-      segPath: string,
-      segIdx: number,
-      currentJob: ServerAudioBookJob
-    ): Promise<ParsedSegmentPage[]> => {
-      const segBuf = fs.readFileSync(segPath);
-      const segMime = segPath.endsWith('.mp3') ? 'audio/mp3' : originalMimeType || 'audio/mp3';
-      try {
-        return await transcribeSingleSegment(
-          segBuf,
-          segMime,
-          segIdx,
-          totalSegs,
-          currentJob.bookTitle,
-          currentJob.lessonTitle,
-          currentJob.speakerName
-        );
-      } catch (firstErr) {
-        // Fallback: split this segment into 60-second micro-segments so it never overflows token limits
-        const subDir = path.join(jobWorkDir, `sub_${segIdx}`);
-        try {
-          if (!fs.existsSync(subDir)) {
-            fs.mkdirSync(subDir, { recursive: true });
-          }
-          const subPattern = path.join(subDir, 'micro_%03d.mp3');
-          await execFileAsync('ffmpeg', [
-            '-y',
-            '-threads',
-            '0',
-            '-i',
-            segPath,
-            '-vn',
-            '-ac',
-            '1',
-            '-ar',
-            '16000',
-            '-b:a',
-            '20k',
-            '-f',
-            'segment',
-            '-segment_time',
-            '60',
-            subPattern,
-          ]);
-          const microFiles = fs
-            .readdirSync(subDir)
-            .filter((f) => f.startsWith('micro_') && f.endsWith('.mp3'))
-            .sort()
-            .map((f) => path.join(subDir, f));
-
-          if (microFiles.length > 1) {
-            const combinedMicroPages: ParsedSegmentPage[] = [];
-            for (let m = 0; m < microFiles.length; m++) {
-              const mBuf = fs.readFileSync(microFiles[m]);
-              const mPages = await transcribeSingleSegment(
-                mBuf,
-                'audio/mp3',
-                segIdx,
-                totalSegs,
-                currentJob.bookTitle,
-                currentJob.lessonTitle,
-                currentJob.speakerName
-              );
-              combinedMicroPages.push(...mPages);
-            }
-            if (combinedMicroPages.length > 0) {
-              return combinedMicroPages;
-            }
-          }
-        } catch {
-          // If micro-split also fails, throw original sanitized error
-        }
-        throw firstErr;
-      }
-    };
 
     for (let i = 0; i < totalSegs; i += CONCURRENCY) {
       const currentJob = store.get(jobId);
@@ -545,8 +597,16 @@ export async function runServerAudioToBookWorker(
 
       await Promise.all(
         batchIndices.map(async (segIdx) => {
-          const segPath = segmentPaths[segIdx];
-          const pagesForSeg = await transcribeWithSubSplitFallback(segPath, segIdx, currentJob);
+          const segItem = segmentBuffers[segIdx];
+          const pagesForSeg = await transcribeSingleSegmentPublic(
+            segItem.buf,
+            segItem.mime,
+            segIdx,
+            totalSegs,
+            currentJob.bookTitle,
+            currentJob.lessonTitle,
+            currentJob.speakerName
+          );
           segmentResults[segIdx] = pagesForSeg;
 
           const latestJob = store.get(jobId);
@@ -626,3 +686,4 @@ export async function runServerAudioToBookWorker(
     }
   }
 }
+

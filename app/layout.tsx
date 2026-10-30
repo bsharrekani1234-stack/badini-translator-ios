@@ -1,63 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import {
-  Amiri,
-  Noto_Naskh_Arabic,
-  Vazirmatn,
-  Scheherazade_New,
-  Lateef,
-  Cairo,
-  Noto_Kufi_Arabic,
-} from 'next/font/google';
 import './globals.css';
-
-const vazirmatn = Vazirmatn({
-  weight: ['400', '500', '600', '700'],
-  subsets: ['arabic'],
-  variable: '--font-vazirmatn',
-  display: 'swap',
-});
-
-const amiri = Amiri({
-  weight: ['400', '700'],
-  subsets: ['arabic'],
-  variable: '--font-amiri',
-  display: 'swap',
-});
-
-const notoNaskh = Noto_Naskh_Arabic({
-  weight: ['400', '500', '600', '700'],
-  subsets: ['arabic'],
-  variable: '--font-noto-naskh',
-  display: 'swap',
-});
-
-const scheherazade = Scheherazade_New({
-  weight: ['400', '700'],
-  subsets: ['arabic'],
-  variable: '--font-scheherazade',
-  display: 'swap',
-});
-
-const lateef = Lateef({
-  weight: ['400', '700'],
-  subsets: ['arabic'],
-  variable: '--font-lateef',
-  display: 'swap',
-});
-
-const cairo = Cairo({
-  weight: ['400', '600', '700'],
-  subsets: ['arabic'],
-  variable: '--font-cairo',
-  display: 'swap',
-});
-
-const notoKufi = Noto_Kufi_Arabic({
-  weight: ['500', '600', '700', '800'],
-  subsets: ['arabic'],
-  variable: '--font-noto-kufi',
-  display: 'swap',
-});
 
 export const viewport: Viewport = {
   themeColor: '#EFF3FB',
@@ -95,11 +37,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="ku"
-      dir="rtl"
-      className={`${notoKufi.variable} ${vazirmatn.variable} ${amiri.variable} ${notoNaskh.variable} ${scheherazade.variable} ${lateef.variable} ${cairo.variable}`}
-    >
+    <html lang="ku" dir="rtl">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@400;600;700&family=Lateef:wght@400;700&family=Noto+Kufi+Arabic:wght@500;600;700;800&family=Noto+Naskh+Arabic:wght@400;500;600;700&family=Scheherazade+New:wght@400;700&family=Vazirmatn:wght@400;500;600;700&display=swap"
+        />
+      </head>
       <body
         suppressHydrationWarning
         className="bg-[#EFF3FB] text-[#14171F] antialiased selection:bg-[#2563EB]/15 selection:text-[#2563EB]"
@@ -109,3 +55,4 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
+

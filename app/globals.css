@@ -4,6 +4,13 @@
   :root {
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --font-noto-kufi: 'Noto Kufi Arabic', sans-serif;
+    --font-noto-naskh: 'Noto Naskh Arabic', serif;
+    --font-amiri: 'Amiri', serif;
+    --font-vazirmatn: 'Vazirmatn', sans-serif;
+    --font-scheherazade: 'Scheherazade New', serif;
+    --font-lateef: 'Lateef', serif;
+    --font-cairo: 'Cairo', sans-serif;
   }
 
   @media (display-mode: standalone), (display-mode: fullscreen) {

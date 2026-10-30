@@ -5,6 +5,7 @@ import {
   persistAudioJobsStore,
   runServerAudioToBookWorker,
   ServerAudioBookJob,
+  transcribeSingleSegmentPublic,
 } from '@/lib/server-audio-book-manager';
 import { sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
 
@@ -33,6 +34,7 @@ export async function POST(req: NextRequest) {
     let action = 'start-job';
     let uploadId = '';
     let chunkIndex = 0;
+    let totalSegments = 1;
     let fileName = 'audio.m4a';
     let mimeType = 'audio/mp4';
     let chunkBuffer: Buffer | null = null;
@@ -49,6 +51,7 @@ export async function POST(req: NextRequest) {
       action = String(body.action || 'start-job').trim();
       uploadId = String(body.uploadId || '');
       chunkIndex = Number(body.chunkIndex || 0);
+      totalSegments = Math.max(1, Number(body.totalSegments || 1));
       fileName = String(body.fileName || 'audio.m4a');
       mimeType = String(body.mimeType || 'audio/mp4');
       if (body.chunkBase64) {
@@ -66,6 +69,7 @@ export async function POST(req: NextRequest) {
       action = ((formData.get('action') as string | null)?.trim() || 'start-job');
       uploadId = String(formData.get('uploadId') || '');
       chunkIndex = Number(formData.get('chunkIndex') || 0);
+      totalSegments = Math.max(1, Number(formData.get('totalSegments') || 1));
       fileName = String(formData.get('fileName') || 'audio.m4a');
       mimeType = String(formData.get('mimeType') || 'audio/mp4');
       const chunkBlob = formData.get('chunk') as File | null;
@@ -90,10 +94,28 @@ export async function POST(req: NextRequest) {
       startPageNumber = Number.isFinite(rawStart) && rawStart >= 1 ? rawStart : 1;
     }
 
+    // Direct stateless segment transcription (works 100% reliably on Vercel /var/task & multi-instance serverless)
+    if (action === 'transcribe-segment') {
+      const segBuf = chunkBuffer || directFileBuffer;
+      if (!segBuf || segBuf.length === 0) {
+        return NextResponse.json({ error: 'پشکا دەنگی یا ڤالایە' }, { status: 400 });
+      }
+      const pages = await transcribeSingleSegmentPublic(
+        segBuf,
+        mimeType || 'audio/mp3',
+        chunkIndex,
+        totalSegments,
+        bookTitle,
+        lessonTitle || bookTitle,
+        speakerName
+      );
+      return NextResponse.json({ ok: true, segmentIndex: chunkIndex, pages });
+    }
+
     const chunkStore = getAudioUploadChunksStore();
     const jobStore = getAudioJobsStore();
 
-    // 1. Upload a small binary/base64 chunk (< 400KB)
+    // 1. Upload a small binary/base64 chunk (< 750KB)
     if (action === 'upload-chunk') {
       if (!uploadId || !chunkBuffer) {
         return NextResponse.json({ error: 'پشکا فایلێ کێمە' }, { status: 400 });

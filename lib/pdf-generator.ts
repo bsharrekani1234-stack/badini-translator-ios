@@ -83,7 +83,11 @@ export function renderBookPageToCanvas(
       ctx.fillStyle = cAccent;
       ctx.fillRect(0, 0, PDF_WIDTH_PT, 18);
     }
-    if (coverCfg.style === 'royal-frame' || coverCfg.style === 'islamic-arch') {
+    if (
+      coverCfg.style === 'royal-frame' ||
+      coverCfg.style === 'islamic-arch' ||
+      coverCfg.style === 'ottoman-medallion'
+    ) {
       ctx.fillStyle = cAccent;
       ctx.font = `bold 14px ${fontFamily}`;
       ctx.textAlign = 'center';
@@ -92,16 +96,40 @@ export function renderBookPageToCanvas(
     }
   } else if (frameStyle !== 'modern-clean') {
     ctx.strokeStyle = frameHex || '#E5DEC9';
-    ctx.lineWidth =
-      frameStyle === 'royal-manuscript' || frameStyle === 'ottoman-diwan' ? 1.8 : 1.0;
-    ctx.strokeRect(22, 22, PDF_WIDTH_PT - 44, PDF_HEIGHT_PT - 44);
-    if (
-      frameStyle === 'royal-manuscript' ||
-      frameStyle === 'islamic-mihrab' ||
-      frameStyle === 'ottoman-diwan'
-    ) {
-      ctx.lineWidth = 0.7;
-      ctx.strokeRect(28, 28, PDF_WIDTH_PT - 56, PDF_HEIGHT_PT - 56);
+    if (frameStyle === 'chamfered-octagon') {
+      const drawChamferFrame = (inset: number, cut: number, lw: number) => {
+        ctx.beginPath();
+        ctx.moveTo(inset + cut, inset);
+        ctx.lineTo(PDF_WIDTH_PT - inset - cut, inset);
+        ctx.lineTo(PDF_WIDTH_PT - inset, inset + cut);
+        ctx.lineTo(PDF_WIDTH_PT - inset, PDF_HEIGHT_PT - inset - cut);
+        ctx.lineTo(PDF_WIDTH_PT - inset - cut, PDF_HEIGHT_PT - inset);
+        ctx.lineTo(inset + cut, PDF_HEIGHT_PT - inset);
+        ctx.lineTo(inset, PDF_HEIGHT_PT - inset - cut);
+        ctx.lineTo(inset, inset + cut);
+        ctx.closePath();
+        ctx.lineWidth = lw;
+        ctx.stroke();
+      };
+      drawChamferFrame(22, 16, 1.8);
+      drawChamferFrame(27, 14, 0.8);
+    } else {
+      ctx.lineWidth =
+        frameStyle === 'royal-manuscript' ||
+        frameStyle === 'ottoman-diwan' ||
+        frameStyle === 'double-gold-line'
+          ? 1.8
+          : 1.0;
+      ctx.strokeRect(22, 22, PDF_WIDTH_PT - 44, PDF_HEIGHT_PT - 44);
+      if (
+        frameStyle === 'royal-manuscript' ||
+        frameStyle === 'islamic-mihrab' ||
+        frameStyle === 'ottoman-diwan' ||
+        frameStyle === 'double-gold-line'
+      ) {
+        ctx.lineWidth = 0.7;
+        ctx.strokeRect(28, 28, PDF_WIDTH_PT - 56, PDF_HEIGHT_PT - 56);
+      }
     }
   }
 
@@ -116,9 +144,19 @@ export function renderBookPageToCanvas(
 
   let cursorY = marginTop;
 
-  // 1. Running Header when page.showHeader is true and headerStyle !== 'none'
+  // 1. Running Header when shouldShowRunningHeader is true
   const headerStyle = design.headerStyle || 'classic-line';
-  if (page.showHeader && page.pageNumber >= 2 && headerStyle !== 'none') {
+  const shouldShowRunningHeader =
+    !hasCoverBlock &&
+    page.pageNumber >= 2 &&
+    headerStyle !== 'none' &&
+    Boolean(
+      page.showHeader ||
+        (design.headerStyle && design.headerStyle !== 'classic-line') ||
+        design.customHeaderTitle?.trim()
+    );
+
+  if (shouldShowRunningHeader) {
     const pageNumStr = toEasternArabicNumerals(page.pageNumber);
     const isOdd = page.pageNumber % 2 === 1;
 
@@ -142,7 +180,6 @@ export function renderBookPageToCanvas(
     };
 
     if (headerStyle === 'chamfered-boxes') {
-      // Exact match to Image 2: Small chamfered page box on left + wide chamfered title box on right
       const boxTop = cursorY - 17;
       const boxH = 26;
       const numBoxW = 46;
@@ -158,7 +195,7 @@ export function renderBookPageToCanvas(
 
       ctx.textAlign = 'right';
       ctx.fillText(headerTitle, rightEdge - 10, cursorY);
-    } else if (headerStyle === 'pill-boxes') {
+    } else if (headerStyle === 'pill-boxes' || headerStyle === 'centered-badge') {
       const boxTop = cursorY - 17;
       const boxH = 26;
       const numBoxW = 44;
@@ -180,6 +217,20 @@ export function renderBookPageToCanvas(
 
       ctx.textAlign = 'right';
       ctx.fillText(headerTitle, rightEdge - 12, cursorY);
+    } else if (headerStyle === 'boxed-full') {
+      const boxTop = cursorY - 17;
+      const boxH = 26;
+      ctx.lineWidth = 1.4;
+      ctx.strokeRect(leftEdge, boxTop, contentWidth, boxH);
+      ctx.beginPath();
+      ctx.moveTo(leftEdge + 46, boxTop);
+      ctx.lineTo(leftEdge + 46, boxTop + boxH);
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.fillText(pageNumStr, leftEdge + 23, cursorY);
+      ctx.textAlign = 'right';
+      ctx.fillText(headerTitle, rightEdge - 10, cursorY);
     } else if (headerStyle === 'ornate-banner') {
       const topY = cursorY - 16;
       const botY = cursorY + 8;

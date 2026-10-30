@@ -107,6 +107,25 @@ export function BookPageSheet({
   const effectiveBgColor = hasCoverBlock ? coverCfg.bgColor || paperHex : paperHex;
   const frameStyle = design?.frameStyle || 'classic-scholarly';
   const effectiveHeaderTitle = design?.customHeaderTitle?.trim() || headerTitle;
+  const paragraphLineHeight =
+    design?.lineSpacing === 'compact'
+      ? 1.55
+      : design?.lineSpacing === 'relaxed'
+      ? 2.05
+      : design?.lineSpacing === 'spacious'
+      ? 2.35
+      : isMobile
+      ? 1.85
+      : 1.78;
+  const shouldShowRunningHeader =
+    !hasCoverBlock &&
+    page.pageNumber >= 2 &&
+    design?.headerStyle !== 'none' &&
+    Boolean(
+      page.showHeader ||
+        (design?.headerStyle && design.headerStyle !== 'classic-line') ||
+        design?.customHeaderTitle?.trim()
+    );
 
   return (
     <div
@@ -128,23 +147,52 @@ export function BookPageSheet({
       {/* Interior Page Frame Variations (when not on cover page) */}
       {!hasCoverBlock && frameStyle !== 'modern-clean' && (
         <>
-          <div
-            style={{ borderColor: frameHex }}
-            className={`pointer-events-none absolute inset-2.5 sm:inset-3 rounded-[16px] sm:rounded-xs ${
-              frameStyle === 'royal-manuscript' || frameStyle === 'ottoman-diwan'
-                ? 'border-2'
-                : 'border'
-            }`}
-          />
-          {(frameStyle === 'royal-manuscript' ||
-            frameStyle === 'islamic-mihrab' ||
-            frameStyle === 'ottoman-diwan') && (
+          {frameStyle === 'chamfered-octagon' ? (
+            <svg
+              viewBox="0 0 600 850"
+              preserveAspectRatio="none"
+              className="pointer-events-none absolute inset-2.5 sm:inset-3 w-[calc(100%-20px)] sm:w-[calc(100%-24px)] h-[calc(100%-20px)] sm:h-[calc(100%-24px)]"
+            >
+              <polygon
+                points="22,3 578,3 597,22 597,828 578,847 22,847 3,828 3,22"
+                fill="none"
+                stroke={frameHex}
+                strokeWidth="2.5"
+              />
+              <polygon
+                points="28,9 572,9 591,28 591,822 572,841 28,841 9,822 9,28"
+                fill="none"
+                stroke={frameHex}
+                strokeWidth="1"
+                strokeDasharray="6 4"
+              />
+            </svg>
+          ) : (
             <div
               style={{ borderColor: frameHex }}
-              className="pointer-events-none absolute inset-4 sm:inset-5 border border-dashed opacity-75 rounded-[12px] sm:rounded-none"
+              className={`pointer-events-none absolute inset-2.5 sm:inset-3 rounded-[16px] sm:rounded-xs ${
+                frameStyle === 'royal-manuscript' ||
+                frameStyle === 'ottoman-diwan' ||
+                frameStyle === 'double-gold-line'
+                  ? 'border-2'
+                  : 'border'
+              }`}
             />
           )}
-          {(frameStyle === 'royal-manuscript' || frameStyle === 'islamic-mihrab') && (
+          {(frameStyle === 'royal-manuscript' ||
+            frameStyle === 'islamic-mihrab' ||
+            frameStyle === 'ottoman-diwan' ||
+            frameStyle === 'double-gold-line') && (
+            <div
+              style={{ borderColor: frameHex }}
+              className={`pointer-events-none absolute inset-4 sm:inset-5 border opacity-75 rounded-[12px] sm:rounded-none ${
+                frameStyle === 'double-gold-line' ? 'border-solid' : 'border-dashed'
+              }`}
+            />
+          )}
+          {(frameStyle === 'royal-manuscript' ||
+            frameStyle === 'islamic-mihrab' ||
+            frameStyle === 'double-gold-line') && (
             <>
               <span
                 style={{ color: headingHex }}
@@ -192,7 +240,9 @@ export function BookPageSheet({
               className="pointer-events-none absolute top-0 inset-x-0 h-5 opacity-90"
             />
           )}
-          {(coverCfg.style === 'royal-frame' || coverCfg.style === 'islamic-arch') && (
+          {(coverCfg.style === 'royal-frame' ||
+            coverCfg.style === 'islamic-arch' ||
+            coverCfg.style === 'ottoman-medallion') && (
             <>
               <div
                 style={{ color: coverCfg.accentColor || headingHex }}
@@ -225,8 +275,8 @@ export function BookPageSheet({
 
       {/* Main upper content container */}
       <div className="flex-1 flex flex-col relative z-0">
-        {/* Running Header when page.showHeader is true and headerStyle !== 'none' */}
-        {page.showHeader && page.pageNumber >= 2 && design?.headerStyle !== 'none' && (
+        {/* Running Header when shouldShowRunningHeader is true */}
+        {shouldShowRunningHeader && (
           <div
             style={{
               marginBottom: `${isMobile ? 18 : Math.round(20 * effectiveZoom)}px`,
@@ -333,6 +383,56 @@ export function BookPageSheet({
                   className="shrink-0 tabular-nums"
                 >
                   ﴿ {pageNumEastern} ﴾
+                </span>
+              </div>
+            ) : design?.headerStyle === 'boxed-full' ? (
+              /* Full-width bordered rectangular box header */
+              <div
+                style={{
+                  borderColor: headingHex,
+                  color: headingHex,
+                }}
+                className="border-[1.8px] rounded-md px-3.5 py-1.5 flex items-center justify-between gap-3 font-bold"
+              >
+                <span
+                  style={{ fontSize: `${isMobile ? 12 : Math.round(12.5 * effectiveZoom)}px` }}
+                  className="truncate"
+                >
+                  {effectiveHeaderTitle}
+                </span>
+                <span
+                  style={{
+                    fontSize: `${isMobile ? 12.5 : Math.round(12.5 * effectiveZoom)}px`,
+                    borderColor: headingHex,
+                  }}
+                  className="shrink-0 tabular-nums border-r-[1.5px] pr-3"
+                >
+                  {pageNumEastern}
+                </span>
+              </div>
+            ) : design?.headerStyle === 'centered-badge' ? (
+              /* Centered ornamental badge header */
+              <div
+                style={{ color: headingHex, borderColor: headingHex }}
+                className="border-b pb-2 flex items-center justify-between gap-2 font-bold"
+              >
+                <span
+                  style={{
+                    fontSize: `${isMobile ? 11.5 : Math.round(11.5 * effectiveZoom)}px`,
+                    borderColor: headingHex,
+                  }}
+                  className="px-3 py-0.5 rounded-full border truncate max-w-[75%]"
+                >
+                  {effectiveHeaderTitle}
+                </span>
+                <span
+                  style={{
+                    fontSize: `${isMobile ? 12 : Math.round(12 * effectiveZoom)}px`,
+                    borderColor: headingHex,
+                  }}
+                  className="w-8 h-7 rounded-full border flex items-center justify-center shrink-0 tabular-nums"
+                >
+                  {pageNumEastern}
                 </span>
               </div>
             ) : (
@@ -445,7 +545,9 @@ export function BookPageSheet({
                       style={{
                         borderColor: cAccentColor,
                         backgroundColor:
-                          coverCfg.style === 'royal-frame' || coverCfg.style === 'islamic-arch'
+                          coverCfg.style === 'royal-frame' ||
+                          coverCfg.style === 'islamic-arch' ||
+                          coverCfg.style === 'ottoman-medallion'
                             ? 'rgba(255,255,255,0.06)'
                             : undefined,
                       }}
@@ -454,6 +556,10 @@ export function BookPageSheet({
                           ? 'border-y-2 border-x rounded-2xl'
                           : coverCfg.style === 'islamic-arch'
                           ? 'border-2 rounded-t-[44px] rounded-b-2xl'
+                          : coverCfg.style === 'ottoman-medallion'
+                          ? 'border-2 rounded-[36px] shadow-inner'
+                          : coverCfg.style === 'minimal-luxury'
+                          ? 'border-y py-8'
                           : coverCfg.style === 'modern-band'
                           ? 'border-r-4 pr-4'
                           : 'border-y border-dashed'
@@ -784,7 +890,7 @@ export function BookPageSheet({
                   key={bIdx}
                   style={{
                     fontSize: `${scaledFontPx}px`,
-                    lineHeight: isMobile ? 1.85 : 1.78,
+                    lineHeight: paragraphLineHeight,
                     marginBottom: `${Math.round(5 * effectiveZoom)}px`,
                     color: bodyHex,
                   }}

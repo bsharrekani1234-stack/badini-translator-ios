@@ -86,7 +86,13 @@ export interface AudioLessonTrack {
 }
 
 export interface CoverDesignConfig {
-  style: 'classic-manuscript' | 'royal-frame' | 'islamic-arch' | 'modern-band';
+  style:
+    | 'classic-manuscript'
+    | 'royal-frame'
+    | 'islamic-arch'
+    | 'modern-band'
+    | 'ottoman-medallion'
+    | 'minimal-luxury';
   bgColor: string;
   borderColor?: string;
   accentColor: string;
@@ -125,16 +131,21 @@ export interface BookDesignConfig {
     | 'islamic-mihrab'
     | 'modern-clean'
     | 'academic-boxed'
-    | 'ottoman-diwan';
+    | 'ottoman-diwan'
+    | 'chamfered-octagon'
+    | 'double-gold-line';
   frameColor: string;
   headingBoxed?: boolean;
-  // Running Top Header Style (e.g. 'chamfered-boxes' matching Image 2)
+  lineSpacing?: 'compact' | 'normal' | 'relaxed' | 'spacious';
+  // Running Top Header Style
   headerStyle?:
     | 'classic-line'
     | 'chamfered-boxes'
     | 'pill-boxes'
     | 'double-rule'
     | 'ornate-banner'
+    | 'boxed-full'
+    | 'centered-badge'
     | 'none';
   customHeaderTitle?: string;
   // Book Cover (Page 1) Design

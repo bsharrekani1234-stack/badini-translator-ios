@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getJobsStore,
   persistJobsStore,
+  resolveWritableTranslationDataDir,
   runServerTranslationWorker,
   ServerTranslationJob,
 } from '@/lib/server-translation-manager';
@@ -22,7 +23,7 @@ function getPdfUploadChunksStore() {
 }
 
 function autoRecoverIncompleteJobs(store: Map<string, ServerTranslationJob>) {
-  const dataDir = path.join(process.cwd(), '.data');
+  const dataDir = resolveWritableTranslationDataDir();
   for (const job of store.values()) {
     if (job.error && (job.error.includes('{"error"') || job.error.includes('429'))) {
       job.error = undefined;
