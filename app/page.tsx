@@ -3162,10 +3162,9 @@ export default function BadiniBookTranslatorPage() {
         })),
       }));
 
-      // Compact representation of all pages in the active book so `searchBookContent` & `retranslatePageWithInstructions` work across the entire book
-      const allBookPagesCompact = pages.map((p) => ({
-        pageNumber: p.pageNumber,
-        text: p.blocks
+      // Compact representation of all pages in the active book (full text for nearby pages, compact 550-char index for distant pages so payload stays <80KB even on 142-page books)
+      const allBookPagesCompact = pages.map((p) => {
+        const rawPageText = p.blocks
           .map((b) => {
             if (b.type === 'heading') return `## ${b.text}`;
             if (b.type === 'paragraph') return b.text;
@@ -3174,34 +3173,58 @@ export default function BadiniBookTranslatorPage() {
             return '';
           })
           .filter(Boolean)
-          .join('\n'),
-      }));
-
-      const res = await fetch('/api/chat-fix-page', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userMessage: messageText,
-          imageDataUrl: attachedImgUrl || undefined,
-          imageMimeType: attachedImgUrl ? attachedImgMime : undefined,
-          currentDesign: activeBookDesign,
-          bookTitle: activeBookDesign.customHeaderTitle || activeBook.headerTitle,
-          currentPage,
-          totalPages: maxPageCount,
-          currentPageData,
-          allBookPagesCompact,
-          allBooksSummary,
-          activeBookId: activeBook.id,
-          currentFontId: bookFontId,
-          currentFontSizePt: fontSizePt,
-          currentViewMode: viewMode,
-          history: recentHistoryPayload,
-        }),
+          .join('\n');
+        const isNearby = Math.abs(p.pageNumber - currentPage) <= 3;
+        return {
+          pageNumber: p.pageNumber,
+          text: isNearby || pages.length <= 25 ? rawPageText : rawPageText.slice(0, 550),
+        };
       });
 
-      const data = await safeParseJson(res);
-      if (!res.ok || data.error) {
-        throw new Error(data.error || 'شاشی د بەرسڤدانێ دا چێبوو');
+      const requestPayloadStr = JSON.stringify({
+        userMessage: messageText,
+        imageDataUrl: attachedImgUrl || undefined,
+        imageMimeType: attachedImgUrl ? attachedImgMime : undefined,
+        currentDesign: activeBookDesign,
+        bookTitle: activeBookDesign.customHeaderTitle || activeBook.headerTitle,
+        currentPage,
+        totalPages: maxPageCount,
+        currentPageData,
+        allBookPagesCompact,
+        allBooksSummary,
+        activeBookId: activeBook.id,
+        currentFontId: bookFontId,
+        currentFontSizePt: fontSizePt,
+        currentViewMode: viewMode,
+        history: recentHistoryPayload,
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any = null;
+      let lastChatErr: unknown = null;
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await fetch('/api/chat-fix-page', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: requestPayloadStr,
+          });
+          const parsed = await safeParseJson(res);
+          if (!res.ok || parsed.error) {
+            throw new Error(parsed.error || 'شاشی د بەرسڤدانێ دا چێبوو');
+          }
+          data = parsed;
+          lastChatErr = null;
+          break;
+        } catch (err) {
+          lastChatErr = err;
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+
+      if (!data) {
+        throw lastChatErr || new Error('شاشی د بەرسڤدانێ دا چێبوو');
       }
 
       let didChangePages = false;

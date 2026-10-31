@@ -237,7 +237,13 @@ async function transcribeSingleSegment(
 
   const response = await generateContentResilient(
     {
-      preferredModels: ['gemini-3.8-flash'],
+      preferredModels: [
+        'gemini-3.8-flash',
+        'gemini-3-flash-preview',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-3.5-transcribe',
+        'gemini-3.1-flash-lite',
+      ],
       contents: [
         {
           role: 'user',

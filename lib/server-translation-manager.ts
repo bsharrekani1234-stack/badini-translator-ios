@@ -7,6 +7,7 @@ import { BookPageData } from './book-types';
 import {
   generateContentResilient,
   parseOrRepairJson,
+  RESILIENT_MODELS,
   sanitizeErrorMessageKurdish,
 } from './gemini-resilient';
 
@@ -159,7 +160,7 @@ async function translateSubPdfBatch(
 
   const response = await generateContentResilient(
     {
-      preferredModels: ['gemini-3.8-flash'],
+      preferredModels: RESILIENT_MODELS,
       contents: {
         parts: [
           {

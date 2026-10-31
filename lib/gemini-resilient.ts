@@ -10,10 +10,14 @@ export const aiClient = new GoogleGenAI({
 });
 
 /**
- * Exclusively use gemini-3.8-flash with deep thinking across Book Translation, Audio-to-Book, and Smart Assistant.
+ * Prioritizes gemini-3.8-flash with deep thinking across Book Translation, Audio-to-Book, and Smart Assistant,
+ * with automatic sub-second failover to gemini-3-flash-preview and gemini-3.1-flash-lite-preview if 3.8-flash is congested.
  */
 export const RESILIENT_MODELS = [
   'gemini-3.8-flash',
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-3.1-flash-lite',
 ] as const;
 
 declare global {
@@ -211,7 +215,10 @@ export async function generateContentResilient(
   },
   maxAttempts = 10
 ): Promise<GenerateContentResponse> {
-  const modelsPool = params.preferredModels || RESILIENT_MODELS;
+  const modelsPool =
+    params.preferredModels && params.preferredModels.length > 1
+      ? params.preferredModels
+      : RESILIENT_MODELS;
   const cooldownMap = getModelCooldownMap();
   let lastError: unknown = null;
   const isJsonExpected = params.config?.responseMimeType === 'application/json';
@@ -228,7 +235,10 @@ export async function generateContentResilient(
 
     try {
       const isFlash38 = modelName === 'gemini-3.8-flash';
-      const supportsThinkingLevel = isFlash38 || modelName === 'gemini-3-flash-preview';
+      const supportsThinkingLevel =
+        isFlash38 ||
+        modelName === 'gemini-3-flash-preview' ||
+        modelName === 'gemini-3.1-flash-lite-preview';
       const baseConfig = { ...(params.config || {}) };
 
       if (isFlash38) {
@@ -242,13 +252,24 @@ export async function generateContentResilient(
         baseConfig.maxOutputTokens = 32768;
       }
 
-      if (supportsThinkingLevel && !baseConfig.thinkingConfig) {
+      if (supportsThinkingLevel) {
         baseConfig.thinkingConfig = {
-          thinkingLevel: ThinkingLevel.HIGH,
+          thinkingLevel: params.fastMode ? ThinkingLevel.LOW : ThinkingLevel.HIGH,
         };
+      } else {
+        delete baseConfig.thinkingConfig;
       }
 
-      const perAttemptTimeoutMs = 65000;
+      // Keep 3.8-flash timeout tight (8.5s for fastMode, 14s for batch) so if 3.8-flash is congested,
+      // we fail over immediately before any 30s reverse-proxy gateway timeout can occur.
+      const perAttemptTimeoutMs = isFlash38
+        ? params.fastMode
+          ? 8500
+          : 14000
+        : params.fastMode
+        ? 14000
+        : 24000;
+
       const response = await Promise.race([
         aiClient.models.generateContent({
           ...params,
@@ -260,8 +281,11 @@ export async function generateContentResilient(
         ),
       ]);
 
-      if (response && response.text) {
-        if (isJsonExpected) {
+      const hasFunctionCalls =
+        Array.isArray(response?.functionCalls) && response.functionCalls.length > 0;
+
+      if (response && (response.text || hasFunctionCalls)) {
+        if (isJsonExpected && response.text) {
           // Validate or repair JSON right here; if unrepairable or empty pages, retry with next model
           const repairedObj = parseOrRepairJson<Record<string, unknown>>(response.text);
           if (
@@ -286,9 +310,9 @@ export async function generateContentResilient(
       lastError = err;
       const errStr = err instanceof Error ? err.message : String(err);
 
-      // If this model timed out, cool it down briefly and immediately try the next model in the pool
+      // If this model timed out, cool it down for 45s and immediately switch to the next model in the pool
       if (errStr.includes('GEMINI_ATTEMPT_TIMEOUT')) {
-        cooldownMap.set(modelName, Date.now() + 12000);
+        cooldownMap.set(modelName, Date.now() + 45000);
         continue;
       }
 
@@ -299,7 +323,7 @@ export async function generateContentResilient(
         errStr.includes('per day limit exceeded')
       ) {
         cooldownMap.set(modelName, Date.now() + 30 * 60 * 1000);
-        await sleep(200);
+        await sleep(100);
         continue;
       }
 
@@ -317,18 +341,18 @@ export async function generateContentResilient(
         errStr.includes('SyntaxError')
       ) {
         cooldownMap.set(modelName, Date.now() + 15000);
-        await sleep(400);
+        await sleep(200);
         continue;
       }
 
-      // RPM 429 or 503 transient errors
+      // RPM 429 or 503 transient errors -> immediate switch to next model
       if (errStr.includes('429') || errStr.includes('503') || errStr.includes('UNAVAILABLE')) {
-        cooldownMap.set(modelName, Date.now() + 8000);
-        await sleep(1000 * ((attempt % 3) + 1));
+        cooldownMap.set(modelName, Date.now() + 30000);
+        await sleep(150);
         continue;
       }
 
-      await sleep(600 * (attempt + 1));
+      await sleep(250);
     }
   }
 

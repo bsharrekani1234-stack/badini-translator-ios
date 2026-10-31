@@ -3,6 +3,7 @@ import { ThinkingLevel, Type } from '@google/genai';
 import {
   generateContentResilient,
   parseOrRepairJson,
+  RESILIENT_MODELS,
   sanitizeErrorMessageKurdish,
 } from '@/lib/gemini-resilient';
 
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest) {
 
     const response = await generateContentResilient(
       {
-        preferredModels: ['gemini-3.8-flash'],
+        preferredModels: RESILIENT_MODELS,
         contents: {
           parts: [
             {

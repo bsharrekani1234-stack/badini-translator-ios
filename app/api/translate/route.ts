@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ThinkingLevel } from '@google/genai';
-import { aiClient, sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
+import {
+  generateContentResilient,
+  RESILIENT_MODELS,
+  sanitizeErrorMessageKurdish,
+} from '@/lib/gemini-resilient';
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,15 +25,18 @@ ${text}
 
 بتنێ دەقێ وەرگێرای ب بادینی بزڤڕینە بێی چو شڕۆڤەیێن زێدە.`;
 
-    const response = await aiClient.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.HIGH,
+    const response = await generateContentResilient(
+      {
+        preferredModels: RESILIENT_MODELS,
+        contents: prompt,
+        config: {
+          thinkingConfig: {
+            thinkingLevel: ThinkingLevel.HIGH,
+          },
         },
       },
-    });
+      6
+    );
 
     return NextResponse.json({
       translatedText: response.text?.trim() || text,

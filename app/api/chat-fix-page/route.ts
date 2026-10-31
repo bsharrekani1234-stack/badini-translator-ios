@@ -6,7 +6,7 @@ import {
   DEFAULT_BOOK_DESIGN,
   toEasternArabicNumerals,
 } from '@/lib/book-types';
-import { aiClient, sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
+import { generateContentResilient, RESILIENT_MODELS, sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
 
 interface BookSummaryForAi {
   id: string;
@@ -531,19 +531,23 @@ ${resolvedMessage}`;
 
     let finalReplyText = '';
 
-    // Autonomous Multi-Step Function Calling Loop using ONLY gemini-3.8-flash with Extended Thinking
+    // Autonomous Multi-Step Function Calling Loop using RESILIENT_MODELS (gemini-3.8-flash primary + instant failover)
     for (let step = 0; step < 3; step++) {
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: conversationContents,
-        config: {
-          systemInstruction,
-          thinkingConfig: {
-            thinkingLevel: ThinkingLevel.HIGH,
+      const response = await generateContentResilient(
+        {
+          preferredModels: RESILIENT_MODELS,
+          fastMode: true,
+          contents: conversationContents,
+          config: {
+            systemInstruction,
+            thinkingConfig: {
+              thinkingLevel: ThinkingLevel.HIGH,
+            },
+            tools: [{ functionDeclarations: AGENT_FUNCTION_DECLARATIONS }],
           },
-          tools: [{ functionDeclarations: AGENT_FUNCTION_DECLARATIONS }],
         },
-      });
+        6
+      );
 
       const functionCalls = response.functionCalls;
       if (!functionCalls || functionCalls.length === 0) {
@@ -723,15 +727,18 @@ ${resolvedMessage}`;
 دەقێ لاپەری:
 ${sourceText}`;
 
-            const retranslatedRes = await aiClient.models.generateContent({
-              model: 'gemini-3.8-flash',
-              contents: retranslatePrompt,
-              config: {
-                thinkingConfig: {
-                  thinkingLevel: ThinkingLevel.HIGH,
+            const retranslatedRes = await generateContentResilient(
+              {
+                preferredModels: RESILIENT_MODELS,
+                contents: retranslatePrompt,
+                config: {
+                  thinkingConfig: {
+                    thinkingLevel: ThinkingLevel.HIGH,
+                  },
                 },
               },
-            });
+              6
+            );
 
             const retranslatedText = retranslatedRes.text?.trim() || sourceText;
             editedPageNumber = targetPage;
