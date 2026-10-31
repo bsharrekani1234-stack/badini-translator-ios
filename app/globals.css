@@ -11,6 +11,11 @@
     --font-scheherazade: 'Scheherazade New', serif;
     --font-lateef: 'Lateef', serif;
     --font-cairo: 'Cairo', sans-serif;
+    /* VisionOS Glassy Dashboard V18 Tokens */
+    --glass-bg: rgba(18, 18, 20, 0.45);
+    --glass-bg-elevated: rgba(24, 24, 28, 0.56);
+    --glass-border: rgba(255, 255, 255, 0.12);
+    --glass-border-hover: rgba(255, 255, 255, 0.24);
   }
 
   @media (display-mode: standalone), (display-mode: fullscreen) {
@@ -34,7 +39,14 @@
     text-rendering: optimizeLegibility;
   }
 
-  /* Font 1: Main headings, top lines, titles, and primary action buttons use Noto Kufi Arabic with generous 2-line spacing */
+  /* High-resolution warm modern interior backdrop for VisionOS floating windows */
+  body {
+    background-color: #0e0d0c;
+    color: #FFFFFF;
+    min-height: 100vh;
+  }
+
+  /* Font 1: Main headings, top lines, titles, and primary action buttons use Noto Kufi Arabic */
   h1,
   h2,
   h3,
@@ -48,7 +60,7 @@
     line-height: 1.95 !important;
   }
 
-  /* Font 2: Subtext, descriptions, multi-line body text, chat messages, inputs, selects, and options use the Soft Classic Font (فۆنتێ کلاسیکێ نەرم) */
+  /* Font 2: Subtext, descriptions, multi-line body text, chat messages, inputs, selects, and options */
   p,
   input,
   select,
@@ -97,6 +109,238 @@
 
 .font-book {
   font-family: var(--font-amiri), var(--font-noto-naskh), serif;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   3D Spatial Glassmorphism Design System (VisionOS Shell)
+   ═══════════════════════════════════════════════════════════ */
+.spatial-scene {
+  perspective: 1600px;
+  overflow: hidden;
+  position: relative;
+}
+
+.spatial-stage {
+  transform-style: preserve-3d;
+  perspective: 1500px;
+  transition: transform 0.3s ease-out;
+}
+
+@media (max-width: 768px) {
+  html {
+    font-size: 13.5px;
+  }
+  .spatial-stage {
+    transform: none;
+    perspective: none;
+  }
+}
+
+/* 3D Hinged Book/Workspace Shell (Left Sidebar gently angled toward the left + Main Window) */
+.spatial-book-shell {
+  transform-style: preserve-3d;
+}
+
+/* Left Sidebar with a very subtle 3D bend facing toward the right (hinged at its right edge) */
+.glass-sidebar-3d {
+  background: linear-gradient(135deg, rgba(38, 34, 30, 0.54) 0%, rgba(18, 16, 15, 0.64) 100%);
+  backdrop-filter: blur(3.6px) saturate(150%);
+  -webkit-backdrop-filter: blur(3.6px) saturate(150%);
+  border-radius: 22px 0 0 22px;
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
+  border-right: 1px solid rgba(255, 255, 255, 0.09);
+  transform-origin: right center;
+  transform: perspective(1600px) rotateY(3.5deg);
+  box-shadow:
+    -12px 25px 55px -12px rgba(0, 0, 0, 0.7),
+    inset 0 1.5px 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 1px 0 rgba(255, 255, 255, 0.06);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* Center Main Glass Window — clean, straight, and unclipped */
+.glass-main-panel-3d {
+  background: linear-gradient(135deg, rgba(38, 34, 30, 0.52) 0%, rgba(18, 16, 15, 0.62) 100%);
+  backdrop-filter: blur(3.6px) saturate(150%);
+  -webkit-backdrop-filter: blur(3.6px) saturate(150%);
+  border-radius: 0 22px 22px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
+  border-right: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+  border-left: none;
+  transform: none;
+  box-shadow:
+    0 40px 90px -15px rgba(0, 0, 0, 0.8),
+    inset 0 1.5px 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+@media (max-width: 767px) {
+  .glass-main-panel-3d {
+    border-radius: 20px;
+    border-left: 1px solid rgba(255, 255, 255, 0.16);
+    transform: none;
+  }
+  .glass-sidebar-3d {
+    transform: none;
+    border-radius: 20px;
+  }
+}
+
+/* Legacy fallback classes */
+.glass-main-window {
+  background: linear-gradient(135deg, rgba(38, 34, 30, 0.52) 0%, rgba(18, 16, 15, 0.62) 100%);
+  backdrop-filter: blur(3.6px) saturate(150%);
+  -webkit-backdrop-filter: blur(3.6px) saturate(150%);
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 
+    0 40px 90px -15px rgba(0, 0, 0, 0.8),
+    inset 0 1.5px 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Sidebar Divider inside the Main Window */
+.glass-sidebar-area {
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Inner Cards (Stats, Upload boxes, Inner panels) — 120Hz GPU Composited */
+.glass-inner-card,
+.stat-card {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(3.6px) saturate(150%);
+  -webkit-backdrop-filter: blur(3.6px) saturate(150%);
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 
+    0 10px 28px -8px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0.5px 0 rgba(255, 255, 255, 0.2);
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+  contain: layout style;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-inner-card:hover,
+.stat-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Top Right Sky/Royal Blue 3D Widget Card */
+.glass-card-blue,
+.glass-card-royal-blue {
+  background: 
+    radial-gradient(circle at 80% 25%, rgba(165, 205, 255, 0.5) 0%, transparent 55%),
+    linear-gradient(145deg, rgba(72, 118, 205, 0.72) 0%, rgba(32, 55, 115, 0.68) 55%, rgba(20, 28, 58, 0.78) 100%);
+  backdrop-filter: blur(3.6px) saturate(150%);
+  -webkit-backdrop-filter: blur(3.6px) saturate(150%);
+  border-radius: 20px;
+  border: 1px solid rgba(190, 220, 255, 0.35);
+  box-shadow: 
+    0 30px 65px -12px rgba(0, 0, 0, 0.75),
+    inset 0 1.5px 1.5px 0 rgba(255, 255, 255, 0.45);
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Floating Dark/Warm 3D Widget Cards */
+.glass-card-dark,
+.glass-card-copper,
+.glass-card,
+.bento-card,
+.bento-card-dark {
+  background: linear-gradient(135deg, rgba(38, 34, 30, 0.52) 0%, rgba(18, 16, 15, 0.62) 100%);
+  backdrop-filter: blur(3.6px) saturate(150%);
+  -webkit-backdrop-filter: blur(3.6px) saturate(150%);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 
+    0 30px 65px -12px rgba(0, 0, 0, 0.78),
+    inset 0 1.5px 1px 0 rgba(255, 255, 255, 0.28);
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-hover-lift {
+  transform: translateZ(0);
+  will-change: transform;
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.glass-hover-lift:hover {
+  transform: translate3d(0, -4px, 0);
+}
+
+/* Left Floating Spatial Sidebar Window */
+.glass-sidebar,
+.bento-sidebar-rail {
+  background: linear-gradient(135deg, rgba(38, 34, 30, 0.52) 0%, rgba(18, 16, 15, 0.62) 100%);
+  backdrop-filter: blur(3.6px) saturate(150%);
+  -webkit-backdrop-filter: blur(3.6px) saturate(150%);
+  color: #FFFFFF;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 22px;
+  box-shadow:
+    0 30px 65px -12px rgba(0, 0, 0, 0.78),
+    inset 0 1.5px 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+/* Primary Glowing Blue Pill Action Button — 120Hz Instant Response */
+.amber-pill {
+  background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
+  color: #FFFFFF;
+  border: 1px solid rgba(147, 197, 253, 0.4);
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+  border-radius: 9999px;
+  padding: 0.38rem 0.9rem;
+  font-weight: 700;
+  transform: translateZ(0);
+  will-change: transform;
+  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.amber-pill:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.48), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+  transform: translate3d(0, -1px, 0);
+}
+
+.amber-pill:active {
+  transform: scale3d(0.97, 0.97, 1);
+}
+
+/* Custom scrollbar for dark glass — 120Hz Momentum Scrolling */
+.dark-scrollbar {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  transform: translateZ(0);
+}
+.dark-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.dark-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dark-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+.dark-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
 }
 
 .no-scrollbar::-webkit-scrollbar {

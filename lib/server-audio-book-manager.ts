@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { Type } from '@google/genai';
+import { ThinkingLevel, Type } from '@google/genai';
 import { BookPageData } from './book-types';
 import {
   collapseRepetitionLoops,
@@ -237,7 +237,7 @@ async function transcribeSingleSegment(
 
   const response = await generateContentResilient(
     {
-      fastMode: true,
+      preferredModels: ['gemini-3.8-flash'],
       contents: [
         {
           role: 'user',
@@ -251,15 +251,17 @@ async function transcribeSingleSegment(
             {
               text: `ئەڤە پشکا (${segmentIdx + 1} ژ ${totalSegments}) یە ژ فایلا دەنگی یا ب ناڤێ «${
                 lessonTitle || bookTitle
-              }» (وانەبێژ: ${speakerName}). هەمی ئاخفتنا د ناڤ ڤێ پشکێ دا پەیڤ ب پەیڤ بێی چ کورتکرن یان گوهۆڕین بنڤیسە و رێکبێخە د ناڤ لاپەرێن پەرتووکێ دا ب فۆرماتا JSON.`,
+              }» (وانەبێژ: ${speakerName}). ب هویربینی هزر تێدا بکە و هەمی ئاخفتنا د ناڤ ڤێ پشکێ دا پەیڤ ب پەیڤ بێی چ کورتکرن یان گوهۆڕین بنڤیسە و ب باشترین شێوە رێکبێخە د ناڤ لاپەرێن پەرتووکێ دا ب فۆرماتا JSON.`,
             },
           ],
         },
       ],
       config: {
         systemInstruction: systemPrompt,
-        temperature: 0.15,
-        maxOutputTokens: 8192,
+        maxOutputTokens: 32768,
+        thinkingConfig: {
+          thinkingLevel: ThinkingLevel.HIGH,
+        },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -288,7 +290,7 @@ async function transcribeSingleSegment(
         },
       },
     },
-    3
+    4
   );
 
   const rawJson = response.text?.trim() || '{}';

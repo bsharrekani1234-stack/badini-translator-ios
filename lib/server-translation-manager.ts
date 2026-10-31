@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
-import { Type } from '@google/genai';
+import { ThinkingLevel, Type } from '@google/genai';
 import { BookPageData } from './book-types';
 import {
   generateContentResilient,
@@ -159,7 +159,7 @@ async function translateSubPdfBatch(
 
   const response = await generateContentResilient(
     {
-      fastMode: true,
+      preferredModels: ['gemini-3.8-flash'],
       contents: {
         parts: [
           {
@@ -171,13 +171,16 @@ async function translateSubPdfBatch(
           {
             text: `لاپەرێن (${pageNumbers.join(
               ', '
-            )}) ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
+            )}) ب هویربینی و هزرکرنەکا قووڵ ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
           },
         ],
       },
       config: {
         systemInstruction,
-        temperature: 0.15,
+        maxOutputTokens: 32768,
+        thinkingConfig: {
+          thinkingLevel: ThinkingLevel.HIGH,
+        },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,

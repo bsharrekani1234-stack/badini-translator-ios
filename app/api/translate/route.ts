@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateContentResilient, sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
+import { ThinkingLevel } from '@google/genai';
+import { aiClient, sanitizeErrorMessageKurdish } from '@/lib/gemini-resilient';
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,7 +11,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'دەق پێدڤی یە' }, { status: 400 });
     }
 
-    const prompt = `تۆ وەرگێرەکێ شارەزا و زمانزانێ شێوەزارێ بادینی (کوردیا کورمانجیا ژێری ب پیتێن ئەرەبی) یێ تایبەتمەند د پەرتووکێن ئیسلامی و شەرعی دا.
+    const prompt = `تۆ شیرەتکارێ زیرەک و زمانزانێ شێوەزارێ بادینی یێ ڕەسەن و پاقژ (کوردیا کورمانجیا ژێری ب پیتێن ئەرەبی) یێ تایبەتمەند د پەرتووکێن ئیسلامی، شەرعی و ئەکادیمی دا.
 ئەڤێ دەقێ ل خوارێ باشتر بکە یان وەرگێرە بۆ بادینیەکا رەسەن، رەوان، و هویر بێی کو رامانا شەرعی یان نیشانێن رەنگێ سۆر وەکی {{r:...}} تێکبچن.
 مەرجێ گرنگ: هەر ئایەتەکا قورئانێ د ناڤ ﴿...﴾ دا هەبیت وەکی خۆ ب عەرەبی بهێلە و چو تەفسیر یان وەرگێرانێ ل بن ئایەتێ مەنڤیسە.
 ${instruction ? `تێبینیا تایبەت: ${instruction}` : ''}
@@ -20,13 +21,15 @@ ${text}
 
 بتنێ دەقێ وەرگێرای ب بادینی بزڤڕینە بێی چو شڕۆڤەیێن زێدە.`;
 
-    const response = await generateContentResilient(
-      {
-        contents: prompt,
-        fastMode: true,
+    const response = await aiClient.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        thinkingConfig: {
+          thinkingLevel: ThinkingLevel.HIGH,
+        },
       },
-      6
-    );
+    });
 
     return NextResponse.json({
       translatedText: response.text?.trim() || text,
@@ -38,3 +41,4 @@ ${text}
     );
   }
 }
+

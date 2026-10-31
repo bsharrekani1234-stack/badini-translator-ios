@@ -33,6 +33,15 @@ import {
   ExternalLink,
   FileSpreadsheet,
   Palette,
+  Play,
+  Pause,
+  Settings,
+  Volume2,
+  ArrowUpRight,
+  ChevronDown,
+  CornerDownLeft,
+  TrendingUp,
+  AudioLines,
 } from 'lucide-react';
 import { PDFDocument } from 'pdf-lib';
 import { ALL_BOOK_PAGES, CHAPTER_INDEX } from '@/lib/book-data';
@@ -59,13 +68,14 @@ import {
   resolveEffectiveColors,
   toEasternArabicNumerals,
 } from '@/lib/book-types';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { BookPageSheet } from '@/components/BookPageSheet';
+import LiquidGlassNav from '@/components/LiquidGlassNav';
 import { generateAndDownloadBookPdf } from '@/lib/pdf-generator';
 import { generateBookWordBlob } from '@/lib/word-generator';
 
 type ViewMode = 'single' | 'spread' | 'compare';
-type ActiveSection = 'reader' | 'audio' | 'upload' | 'chat' | 'export';
+type ActiveSection = 'upload' | 'library' | 'reader' | 'audio' | 'chat' | 'export';
 
 export interface PreparedDownloadItem {
   id: string;
@@ -161,6 +171,14 @@ interface ChatMessage {
   didUpdateDesign?: boolean;
   previousDesignSnapshot?: BookDesignConfig;
   previousPagesSnapshot?: BookPageData[];
+  executedToolCalls?: {
+    tool: string;
+    summaryKurdish: string;
+    pageNumber?: number;
+    query?: string;
+    matchCount?: number;
+  }[];
+  reverted?: boolean;
 }
 
 const DEFAULT_BOOK_ID = 'default-142-book';
@@ -242,7 +260,7 @@ export default function BadiniBookTranslatorPage() {
   const [bookFontId, setBookFontId] = useState<string>('original');
   const [zoom] = useState<number>(0.95);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [activeSection, setActiveSection] = useState<ActiveSection>('reader');
+  const [activeSection, setActiveSection] = useState<ActiveSection>('upload');
 
   const activeBookFont = useMemo<BookFontOption>(
     () => BOOK_FONT_OPTIONS.find((f) => f.id === bookFontId) || BOOK_FONT_OPTIONS[0],
@@ -303,21 +321,48 @@ export default function BadiniBookTranslatorPage() {
   const [mergePrimaryBookId, setMergePrimaryBookId] = useState<string>(SHAKHSIYA_QAWIYA_BOOK_ID);
   const [mergeSecondaryBookId, setMergeSecondaryBookId] = useState<string>('');
 
-  // AI Book, Cover & Multi-Color Font Design Bot state (with Image Reference Upload Support)
+  // Autonomous Smart Assistant ("شیرەتکارێ زیرەک") state
   const [chatInput, setChatInput] = useState<string>('');
   const [chatImageDataUrl, setChatImageDataUrl] = useState<string | null>(null);
   const [chatImageMimeType, setChatImageMimeType] = useState<string>('image/jpeg');
   const [chatImageName, setChatImageName] = useState<string>('');
   const chatImageInputRef = useRef<HTMLInputElement | null>(null);
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      text: 'سلاڤ! ئەز ڕۆبۆتێ گشتی یێ دیزاینکرن و رێکخستنا پەرتووکێمە. هەر تشتەکێ تە بڤێت بێژە من یان وێنەیەکی (Screenshot) بهنێرە: گوهۆڕینا شێوازێ سەرێ لاپەری، رەنگێن فۆنتان (١، ٢، یان ٣ رەنگ)، چێکرنا بەرگێ پەرتووکێ، یان ژێبرنا هەر لاپەرەکێ تە بڤێت!',
-    },
-  ]);
+  const [isReaderAgentOpen, setIsReaderAgentOpen] = useState<boolean>(false);
+  const [aiChatMode, setAiChatMode] = useState<'chat' | 'task'>('chat');
+  const [aiStyleLabel, setAiStyleLabel] = useState<'زیرەک' | 'قووڵ'>('زیرەک');
+  const [isVoiceListening, setIsVoiceListening] = useState<boolean>(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const handleToggleVoiceDictation = () => {
+    if (typeof window === 'undefined') return;
+    const SpeechRec =
+      (window as unknown as { SpeechRecognition?: new () => { lang: string; interimResults: boolean; onresult: ((ev: { results: { 0: { transcript: string } }[] }) => void) | null; onend: (() => void) | null; onerror: (() => void) | null; start: () => void } }).SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: new () => { lang: string; interimResults: boolean; onresult: ((ev: { results: { 0: { transcript: string } }[] }) => void) | null; onend: (() => void) | null; onerror: (() => void) | null; start: () => void } }).webkitSpeechRecognition;
+    if (!SpeechRec) return;
+    if (isVoiceListening) {
+      setIsVoiceListening(false);
+      return;
+    }
+    try {
+      const rec = new SpeechRec();
+      rec.lang = 'ar-IQ';
+      rec.interimResults = false;
+      setIsVoiceListening(true);
+      rec.onresult = (event) => {
+        const transcript = event.results?.[0]?.[0]?.transcript || '';
+        if (transcript) {
+          setChatInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        }
+      };
+      rec.onend = () => setIsVoiceListening(false);
+      rec.onerror = () => setIsVoiceListening(false);
+      rec.start();
+    } catch {
+      setIsVoiceListening(false);
+    }
+  };
 
   // Server-side background job tracking & client-side completed audio segment cache (for instant resume)
   const [activeServerJobId, setActiveServerJobId] = useState<string | null>(null);
@@ -665,7 +710,7 @@ export default function BadiniBookTranslatorPage() {
             const rawErr = String(job.error);
             const cleanErr =
               rawErr.includes('429') || rawErr.includes('RESOURCE_EXHAUSTED') || rawErr.includes('{"error"')
-                ? 'لۆدەکا زۆر ل سەر مۆدێلێ ئێکێ هەبوو — سیستەم هاتە گوهۆڕین بۆ مۆدێلێ یەدەک، تکایە دوگمەیا وەرگێرانێ جارەکا دی لێبدە.'
+                ? 'لۆدەکا زۆر ل سەر سێرڤەری هەبوو — تکایە دوگمەیا وەرگێرانێ جارەکا دی لێبدە.'
                 : rawErr;
             setUploadError(cleanErr);
           }
@@ -1435,7 +1480,7 @@ export default function BadiniBookTranslatorPage() {
       raw.includes('quota') ||
       raw.includes('{"error"')
     ) {
-      return 'لۆدەکا زۆر ل سەر مۆدێلێ ئێکێ هەبوو — سیستەم هاتە گوهۆڕین بۆ مۆدێلێ یەدەک، تکایە دوگمەیێ جارەکا دی لێبدە.';
+      return 'لۆدەکا زۆر ل سەر سێرڤەری هەبوو — تکایە دوگمەیێ جارەکا دی لێبدە.';
     }
     if (
       raw.includes('Unterminated string') ||
@@ -2991,7 +3036,72 @@ export default function BadiniBookTranslatorPage() {
     }
   };
 
-  // Handle interactive Design Studio Bot ("ڕۆبۆتێ گشتی یێ دیزاینکرن و رێکخستنا پەرتووکێ")
+  // Convert a plain/markdown Badini string from `updateCurrentPageText` or `retranslatePageWithInstructions`
+  // into structured BookPageData['blocks'] while preserving cover blocks and typography
+  const buildUpdatedBlocksFromBadiniText = (
+    existingPage: BookPageData,
+    newBadiniText: string
+  ): BookPageData['blocks'] => {
+    const coverBlocks = existingPage.blocks.filter((b) => b.type === 'cover');
+    const existingTextBlocks = existingPage.blocks.filter(
+      (b) => b.type === 'heading' || b.type === 'paragraph'
+    );
+    const rawLines = newBadiniText
+      .split(/\n+/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (rawLines.length === 0) return existingPage.blocks;
+
+    // If line count matches existing text blocks count and none has explicit markdown `#`, map 1-to-1 preserving block metadata
+    if (
+      rawLines.length === existingTextBlocks.length &&
+      !rawLines.some((l) => l.startsWith('#'))
+    ) {
+      const mapped = existingTextBlocks.map((b, idx) => ({
+        ...b,
+        text: rawLines[idx],
+      }));
+      return [...coverBlocks, ...mapped];
+    }
+
+    const firstWasHeading = existingTextBlocks[0]?.type === 'heading';
+    const newBlocks: BookPageData['blocks'] = [...coverBlocks];
+
+    rawLines.forEach((line, idx) => {
+      if (line.startsWith('#')) {
+        const cleanHeading = line.replace(/^#+\s*/, '').trim();
+        if (cleanHeading) {
+          newBlocks.push({
+            type: 'heading',
+            text: cleanHeading,
+            align: 'center',
+            size: idx === 0 ? 'lg' : 'md',
+            color: 'red',
+          });
+        }
+      } else if (idx === 0 && firstWasHeading && line.length <= 135 && rawLines.length > 1) {
+        newBlocks.push({
+          type: 'heading',
+          text: line,
+          align: 'center',
+          size: 'md',
+          color: 'red',
+        });
+      } else {
+        newBlocks.push({
+          type: 'paragraph',
+          text: line,
+          align: 'justify',
+          color: 'black',
+        });
+      }
+    });
+
+    return newBlocks;
+  };
+
+  // Handle Autonomous Smart Assistant ("شیرەتکارێ زیرەک")
   const handleSendChatMessage = async (
     e?: React.FormEvent,
     presetPrompt?: string
@@ -3029,7 +3139,7 @@ export default function BadiniBookTranslatorPage() {
       imageName: attachedImgName || undefined,
     };
 
-    const recentHistoryPayload = chatMessages.slice(-5).map((m) => ({
+    const recentHistoryPayload = chatMessages.slice(-6).map((m) => ({
       role: m.role,
       text: m.text,
     }));
@@ -3052,6 +3162,21 @@ export default function BadiniBookTranslatorPage() {
         })),
       }));
 
+      // Compact representation of all pages in the active book so `searchBookContent` & `retranslatePageWithInstructions` work across the entire book
+      const allBookPagesCompact = pages.map((p) => ({
+        pageNumber: p.pageNumber,
+        text: p.blocks
+          .map((b) => {
+            if (b.type === 'heading') return `## ${b.text}`;
+            if (b.type === 'paragraph') return b.text;
+            if (b.type === 'cover') return (b.titleLines || []).join(' — ');
+            if (b.type === 'epigraph') return `${b.intro} ${b.verse}`;
+            return '';
+          })
+          .filter(Boolean)
+          .join('\n'),
+      }));
+
       const res = await fetch('/api/chat-fix-page', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3064,10 +3189,12 @@ export default function BadiniBookTranslatorPage() {
           currentPage,
           totalPages: maxPageCount,
           currentPageData,
+          allBookPagesCompact,
           allBooksSummary,
           activeBookId: activeBook.id,
           currentFontId: bookFontId,
           currentFontSizePt: fontSizePt,
+          currentViewMode: viewMode,
           history: recentHistoryPayload,
         }),
       });
@@ -3078,13 +3205,41 @@ export default function BadiniBookTranslatorPage() {
       }
 
       let didChangePages = false;
+      let didModifySpecificPage = false;
+      let modifiedPageNum: number | undefined;
+      let modifiedPagePreviousSnap: BookPageData | undefined;
       let workingPages = [...pages];
+
+      // 0. Handle Agentic Tool: `updateCurrentPageText(pageNumber, newBadiniText)` or `retranslatePageWithInstructions`
+      if (
+        typeof data.updatedPageBadiniText === 'string' &&
+        data.updatedPageBadiniText.trim()
+      ) {
+        const targetP =
+          typeof data.editedPageNumber === 'number' && data.editedPageNumber >= 1
+            ? Math.min(maxPageCount, Math.max(1, data.editedPageNumber))
+            : currentPage;
+        modifiedPageNum = targetP;
+        modifiedPagePreviousSnap = previousPagesSnap.find((p) => p.pageNumber === targetP);
+
+        workingPages = workingPages.map((p) => {
+          if (p.pageNumber !== targetP) return p;
+          return {
+            ...p,
+            blocks: buildUpdatedBlocksFromBadiniText(p, data.updatedPageBadiniText.trim()),
+          };
+        });
+        didChangePages = true;
+        didModifySpecificPage = true;
+      }
 
       // 1. Handle Direct Current Page Content Edits (Blocks / Footnotes)
       if (
         (Array.isArray(data.updatedCurrentPageBlocks) && data.updatedCurrentPageBlocks.length > 0) ||
         Array.isArray(data.updatedCurrentPageFootnotes)
       ) {
+        modifiedPageNum = currentPage;
+        modifiedPagePreviousSnap = previousPagesSnap.find((p) => p.pageNumber === currentPage);
         workingPages = workingPages.map((p) => {
           if (p.pageNumber !== currentPage) return p;
           return {
@@ -3100,6 +3255,7 @@ export default function BadiniBookTranslatorPage() {
           };
         });
         didChangePages = true;
+        didModifySpecificPage = true;
       }
 
       // 2. Handle Inserting a New Page after Current Page
@@ -3219,15 +3375,24 @@ export default function BadiniBookTranslatorPage() {
         );
       }
 
-      // 7. Handle Recommended Font Family & Font Size
+      // 7. Handle Agentic Tool: `adjustReaderSettings(fontSize, theme, viewMode)` & Font Family
       if (
         data.recommendedFontId &&
         BOOK_FONT_OPTIONS.some((f) => f.id === data.recommendedFontId)
       ) {
         handleSelectBookFont(data.recommendedFontId);
       }
-      if (typeof data.recommendedFontSizePt === 'number') {
+      if (typeof data.adjustedFontSizePt === 'number') {
+        setFontSizePt(data.adjustedFontSizePt);
+      } else if (typeof data.recommendedFontSizePt === 'number') {
         setFontSizePt(data.recommendedFontSizePt);
+      }
+      if (
+        data.adjustedViewMode === 'single' ||
+        data.adjustedViewMode === 'spread' ||
+        data.adjustedViewMode === 'compare'
+      ) {
+        setViewMode(data.adjustedViewMode);
       }
 
       // 8. Handle Design, Header Style, Header Title, Colors, Frame, Line Spacing, and Cover Updates
@@ -3235,7 +3400,6 @@ export default function BadiniBookTranslatorPage() {
         const updatedCfg = data.updatedDesign as BookDesignConfig;
         updateActiveBookDesign(updatedCfg);
 
-        // If user modified the Cover, ensure Page 1 has a cover block and jump to Page 1 if requested
         if (data.touchedCover && updatedCfg.cover) {
           const c = updatedCfg.cover;
           updatePageInActiveBook(1, (p1) => {
@@ -3271,16 +3435,15 @@ export default function BadiniBookTranslatorPage() {
           currentPage === 1 &&
           maxPageCount >= 2
         ) {
-          // Jump to Page 2 when changing running header style while on Page 1 so the user sees it immediately
           setCurrentPage(2);
         }
 
         setEditorStatusBanner(
-          data.reply || 'دیزاین و داخازیێن تە ب سەرکەفتیانە هاتنە جێبەجێکرن!'
+          data.reply || 'داخازیێن تە ب سەرکەفتیانە هاتنە جێبەجێکرن!'
         );
       }
 
-      // 9. Handle Website-Wide Library & Navigation Commands
+      // 9. Handle Website-Wide Library & Navigation Commands (`navigateToPage`, etc.)
       if (typeof data.deleteLessonNumber === 'number' && data.deleteLessonNumber >= 1) {
         const targetTrack = activeBook.audioTracks?.[data.deleteLessonNumber - 1];
         if (targetTrack) {
@@ -3294,60 +3457,6 @@ export default function BadiniBookTranslatorPage() {
 
       if (data.restoreBuiltInBooks) {
         handleRestoreBuiltInBooks();
-      }
-
-      if (
-        typeof data.mergePrimaryBookId === 'string' &&
-        data.mergePrimaryBookId.trim() &&
-        typeof data.mergeSecondaryBookId === 'string' &&
-        data.mergeSecondaryBookId.trim()
-      ) {
-        const pBook = allBooks.find((b) => b.id === data.mergePrimaryBookId.trim());
-        const sBook = allBooks.find((b) => b.id === data.mergeSecondaryBookId.trim());
-        if (pBook && sBook && pBook.id !== sBook.id) {
-          const secContent = sBook.pages.filter(
-            (p) => !p.blocks.some((b) => b.type === 'cover')
-          );
-          const pagesToAppend = secContent.length > 0 ? secContent : sBook.pages;
-          const startP = pBook.pages.length + 1;
-          const renumberedAppended: BookPageData[] = pagesToAppend.map((p, idx) => ({
-            ...p,
-            pageNumber: startP + idx,
-            showHeader: true,
-          }));
-          const mergedPages = [...pBook.pages, ...renumberedAppended];
-          const newTrack: AudioLessonTrack = {
-            id: `merged-track-${Date.now()}`,
-            title: sBook.title,
-            startPage: startP,
-            endPage: mergedPages.length,
-          };
-          const mergedTracks = [...(pBook.audioTracks || []), newTrack];
-          if (pBook.id === SHAKHSIYA_QAWIYA_BOOK_ID) {
-            setShakhsiyaBookPages(mergedPages);
-            setShakhsiyaAudioTracks(mergedTracks);
-          } else if (pBook.id === QAWAID_LESSON1_BOOK_ID) {
-            setQawaidBookPages(mergedPages);
-            setQawaidAudioTracks(mergedTracks);
-          } else if (pBook.id === DEFAULT_BOOK_ID) {
-            setDefaultBookPages(mergedPages);
-          } else {
-            setCustomBooks((prev) =>
-              prev.map((b) =>
-                b.id === pBook.id
-                  ? {
-                      ...b,
-                      totalPages: mergedPages.length,
-                      pages: mergedPages,
-                      audioTracks: mergedTracks,
-                    }
-                  : b
-              )
-            );
-          }
-          setActiveBookId(pBook.id);
-          setCurrentPage(startP);
-        }
       }
 
       if (typeof data.switchToBookId === 'string' && data.switchToBookId.trim()) {
@@ -3381,10 +3490,16 @@ export default function BadiniBookTranslatorPage() {
         id: `a-${Date.now()}`,
         role: 'assistant',
         text: data.reply || 'گوهۆڕین هاتنە جێبەجێکرن.',
+        pageNumber: modifiedPageNum,
+        didModifyPage: didModifySpecificPage,
+        previousPageSnapshot: modifiedPagePreviousSnap,
         didUpdateDesign: Boolean(data.didUpdateDesign || didChangePages),
         previousDesignSnapshot:
           data.didUpdateDesign || didChangePages ? previousDesignSnap : undefined,
         previousPagesSnapshot: didChangePages ? previousPagesSnap : undefined,
+        executedToolCalls: Array.isArray(data.executedToolCalls)
+          ? data.executedToolCalls
+          : undefined,
       };
 
       setChatMessages((prev) => [...prev, assistantMsg]);
@@ -3404,22 +3519,46 @@ export default function BadiniBookTranslatorPage() {
     }
   };
 
-  const handleUndoChatDesign = (msg: ChatMessage) => {
+  // 1-Click Undo ("زڤڕاندن (Undo)") for page text edits (`updateCurrentPageText` / `retranslatePageWithInstructions`) and design changes
+  const handleUndoChatAction = (msg: ChatMessage) => {
+    if (msg.reverted) return;
+
+    if (msg.didModifyPage && msg.previousPageSnapshot && msg.pageNumber) {
+      const targetP = msg.pageNumber;
+      const snap = msg.previousPageSnapshot;
+      updatePageInActiveBook(targetP, () => snap);
+      setCurrentPage(targetP);
+      setChatMessages((prev) =>
+        prev
+          .map((m) => (m.id === msg.id ? { ...m, reverted: true } : m))
+          .concat({
+            id: `undo-${Date.now()}`,
+            role: 'assistant',
+            text: `گوهۆڕینێن لاپەرێ ${toEasternArabicNumerals(targetP)} هاتنە زڤڕاندن بۆ دەقێ بەرێ.`,
+          })
+      );
+      setEditorStatusBanner(
+        `لاپەرێ ${toEasternArabicNumerals(targetP)} زڤڕی سەر دەقێ خۆ یێ بەرێ.`
+      );
+      return;
+    }
+
     if (msg.previousDesignSnapshot) {
       updateActiveBookDesign(msg.previousDesignSnapshot);
     }
     if (msg.previousPagesSnapshot) {
       replacePagesInActiveBook(msg.previousPagesSnapshot);
     }
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `undo-${Date.now()}`,
-        role: 'assistant',
-        text: 'دیزاین و لاپەرێن پەرتووکێ زڤڕین سەر رەوشا خۆ یا بەرێ.',
-      },
-    ]);
-    setEditorStatusBanner('دیزاین و لاپەر زڤڕین سەر رەوشا خۆ یا بەرێ.');
+    setChatMessages((prev) =>
+      prev
+        .map((m) => (m.id === msg.id ? { ...m, reverted: true } : m))
+        .concat({
+          id: `undo-${Date.now()}`,
+          role: 'assistant',
+          text: 'گوهۆڕین هاتنە زڤڕاندن بۆ رەوشا بەرێ.',
+        })
+    );
+    setEditorStatusBanner('گوهۆڕین زڤڕین سەر رەوشا خۆ یا بەرێ.');
   };
 
   // Ensure Page 1 has a Cover block if the user wants to add/customize a cover on a book without one
@@ -3772,6 +3911,37 @@ export default function BadiniBookTranslatorPage() {
     }
   };
 
+  // Custom Bento Dark Charcoal Audio Player state & ref
+  const bentoAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlayingBentoAudio, setIsPlayingBentoAudio] = useState<boolean>(false);
+  const [bentoAudioCurrentSec, setBentoAudioCurrentSec] = useState<number>(0);
+  const [bentoAudioDurationSec, setBentoAudioDurationSec] = useState<number>(2080);
+
+  const activeBentoAudioUrl =
+    activeBook.audioUrl || SHAKHSIYA_QAWIYA_AUDIO_URL || QAWAID_ARBA_LESSON1_AUDIO_URL;
+
+  const bentoAudioTrackTitle =
+    activeBook.audioUrl || (activeBook.audioTracks && activeBook.audioTracks.length > 0)
+      ? activeBook.title
+      : 'پەرتووکا الشخصية القوية (کەسایەتییا بهێز — ٢ وانە پێکڤە)';
+
+  const formatTimeMmSs = (sec: number): string => {
+    const clean = Math.max(0, Math.floor(sec || 0));
+    const m = Math.floor(clean / 60);
+    const s = clean % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const handleToggleBentoAudio = () => {
+    const el = bentoAudioRef.current;
+    if (!el) return;
+    if (el.paused) {
+      void el.play().catch(() => {});
+    } else {
+      el.pause();
+    }
+  };
+
   const mainSections: {
     id: ActiveSection;
     label: string;
@@ -3780,34 +3950,60 @@ export default function BadiniBookTranslatorPage() {
   }[] = [
     {
       id: 'upload',
-      label: 'وەرگێرانا پەرتووکێ و پەرتووکخانە',
+      label: 'سەرەکی و وەرگێران',
+      shortLabel: 'سەرەکی / وەرگێران',
+      icon: <Upload className="w-4 h-4 shrink-0" />,
+    },
+    {
+      id: 'library',
+      label: 'پەرتووکخانەیا تە',
       shortLabel: 'پەرتووکخانە',
-      icon: <Library className="w-5 h-5 shrink-0" />,
+      icon: <Library className="w-4 h-4 shrink-0" />,
     },
     {
       id: 'reader',
       label: 'خوێندنا پەرتووکێ',
-      shortLabel: 'خوێندن',
-      icon: <BookOpen className="w-5 h-5 shrink-0" />,
+      shortLabel: 'خویندن',
+      icon: <BookOpen className="w-4 h-4 shrink-0" />,
+    },
+    {
+      id: 'audio',
+      label: 'دەنگ بۆ پەرتووک',
+      shortLabel: 'دەنگ بۆ پەرتووک',
+      icon: <Headphones className="w-4 h-4 shrink-0" />,
     },
     {
       id: 'chat',
-      label: 'دیزاینا پەرتووکێ و بەرگی',
-      shortLabel: 'دیزاین',
-      icon: <Palette className="w-5 h-5 shrink-0" />,
+      label: 'شیرەتکارێ زیرەک و دیزاین',
+      shortLabel: 'شیرەتکارێ زیرەک',
+      icon: <Sparkles className="w-4 h-4 shrink-0" />,
     },
     {
       id: 'export',
-      label: 'فۆنت و سەیڤکرن (PDF / Word)',
-      shortLabel: 'PDF / Word',
-      icon: <FolderDown className="w-5 h-5 shrink-0" />,
+      label: 'ڕێکخستن و سەیڤکرن (PDF / Word)',
+      shortLabel: 'ڕێکخستن / PDF',
+      icon: <Settings className="w-4 h-4 shrink-0" />,
     },
   ];
 
-  // Mobile Bottom Navigation Touch-Drag / Scrub State (Glider follows finger, switches section ONLY on release)
+  // Mobile Bottom Navigation Touch-Drag / Scrub State
   const mobileNavRef = useRef<HTMLElement | null>(null);
   const [scrubNavIndex, setScrubNavIndex] = useState<number | null>(null);
   const [isScrubbingNav, setIsScrubbingNav] = useState(false);
+
+  // Interactive 7-Bar Reading & Translation Activity State (Laptop Right Widget)
+  const [selectedActivityDayIdx, setSelectedActivityDayIdx] = useState<number>(3);
+  const totalLibraryPages = allBooks.reduce((acc, b) => acc + b.pages.length, 0);
+  const activityDays = [
+    { label: 'ش', dayName: 'شەمب', pct: 48, pages: Math.max(8, Math.round(totalLibraryPages * 0.11)), targetPage: 1 },
+    { label: 'ی', dayName: 'ئێکشەمب', pct: 68, pages: Math.max(12, Math.round(totalLibraryPages * 0.15)), targetPage: Math.min(maxPageCount, 3) },
+    { label: 'د', dayName: 'دووشەمب', pct: 56, pages: Math.max(10, Math.round(totalLibraryPages * 0.12)), targetPage: Math.min(maxPageCount, 5) },
+    { label: 'س', dayName: 'سێشەمب', pct: 94, pages: Math.max(24, Math.round(totalLibraryPages * 0.22)), targetPage: Math.min(maxPageCount, 8) },
+    { label: 'چ', dayName: 'چارشەمب', pct: 74, pages: Math.max(14, Math.round(totalLibraryPages * 0.14)), targetPage: Math.min(maxPageCount, 10) },
+    { label: 'پ', dayName: 'پێنجشەمب', pct: 84, pages: Math.max(18, Math.round(totalLibraryPages * 0.16)), targetPage: Math.min(maxPageCount, 12) },
+    { label: 'ئ', dayName: 'ئەینی', pct: 64, pages: Math.max(11, Math.round(totalLibraryPages * 0.10)), targetPage: Math.min(maxPageCount, maxPageCount) },
+  ];
+  const activeActivityDay = activityDays[selectedActivityDayIdx] || activityDays[3];
 
   const resolveNavIndexAtX = (clientX: number): number | null => {
     const navEl = mobileNavRef.current;
@@ -3829,2771 +4025,2758 @@ export default function BadiniBookTranslatorPage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#EFF3FB] text-[#14171F] pb-28 md:pb-10">
-      {/* Mobile Status-Bar Safe Area Shield — Prevents content from overlapping clock/Wi-Fi/battery in mobile app mode & adds a small clean gap underneath like Image 3 */}
+    <div
+      className="spatial-scene relative min-h-screen w-full text-white overflow-x-hidden flex items-center justify-center p-2 sm:p-6 lg:p-8 pb-20 md:pb-8"
+    >
+      {/* High-Resolution Warm Luxury Living Room Ambient Background (Seamless behind 10% Glass Blur) */}
       <div
         aria-hidden="true"
-        className="no-print md:hidden sticky top-0 z-40 w-full bg-[#EFF3FB]/95 backdrop-blur-md pointer-events-none shrink-0"
-        style={{
-          height: 'calc(var(--safe-top, 0px) + 6px)',
+        className="no-print fixed inset-0 pointer-events-none z-0 overflow-hidden bg-[#b8a58e]"
+      >
+        <div
+          className="absolute inset-0 bg-cover bg-center scale-105"
+          style={{
+            backgroundImage:
+              "url('https://images.unsplash.com/photo-1600210492486-724fe5c67fb0?q=85&w=2200&auto=format&fit=crop')",
+          }}
+        />
+        {/* Warm Ambient Sunlight & Floor Lamp Glow */}
+        <div
+          className="absolute inset-0"
+          style={{
+            background:
+              'radial-gradient(circle at 82% 24%, rgba(255, 200, 125, 0.35) 0%, transparent 50%), linear-gradient(180deg, rgba(28, 24, 20, 0.28) 0%, rgba(18, 15, 12, 0.42) 100%)',
+          }}
+        />
+      </div>
+
+      {/* Hidden synchronized audio element for the Audio Book Widget */}
+      <audio
+        ref={bentoAudioRef}
+        src={activeBentoAudioUrl}
+        preload="metadata"
+        onPlay={() => setIsPlayingBentoAudio(true)}
+        onPause={() => setIsPlayingBentoAudio(false)}
+        onEnded={() => setIsPlayingBentoAudio(false)}
+        onTimeUpdate={(e) => setBentoAudioCurrentSec(e.currentTarget.currentTime)}
+        onLoadedMetadata={(e) => {
+          if (e.currentTarget.duration && Number.isFinite(e.currentTarget.duration)) {
+            setBentoAudioDurationSec(e.currentTarget.duration);
+          }
         }}
+        className="hidden"
       />
 
-      {/* Clean Minimal White Top Navbar — Desktop Only (Mobile uses the Gliding Bottom Pill Dock, eliminating any top scrollbar) */}
-      <header className="no-print hidden md:block sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-[0_1px_3px_rgba(15,23,42,0.03)]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-center">
-          <nav className="flex items-center justify-center gap-6 lg:gap-9">
-            {mainSections.map((sec) => {
-              const isActive =
-                activeSection === sec.id ||
-                (sec.id === 'upload' && activeSection === 'audio');
-              return (
-                <button
-                  key={sec.id}
-                  type="button"
-                  onClick={() => setActiveSection(sec.id)}
-                  className={`relative py-4 text-[13px] font-heading transition-colors whitespace-nowrap cursor-pointer ${
-                    isActive
-                      ? 'text-[#2563EB] font-extrabold'
-                      : 'text-slate-600 hover:text-slate-900 font-semibold'
-                  }`}
-                >
-                  <span>{sec.label}</span>
-                  {isActive && (
-                    <span className="absolute inset-x-0 bottom-0 h-0.5 bg-[#2563EB] rounded-full" />
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-      </header>
+      {/* ═══════════════════════════════════════════════════════════════════════════
+          3D SPATIAL GLASSMORPHISM STAGE (.spatial-stage)
+          Contains:
+            1) Unified 3D Glass Window (.glass-main-window) wrapping Left Sidebar (.glass-sidebar-area) + Center Area
+            2) Right Stacked 3D Widget Cards (.glass-card-blue & .glass-card-dark)
+         ═══════════════════════════════════════════════════════════════════════════ */}
+      <div
+        dir="ltr"
+        className="spatial-stage relative z-10 w-full max-w-[1360px] mx-auto lg:h-[86vh] flex flex-col lg:flex-row gap-5 items-stretch"
+      >
+        {/* 3D HINGED BOOK / WORKSPACE SHELL (Left Sidebar angled toward the right + Center Main Panel) */}
+        <div className="spatial-book-shell flex-1 min-w-0 flex flex-col md:flex-row lg:h-full items-stretch">
+          {/* ─────────────────────────────────────────────────────────────────────────
+              COLUMN 1 (Left 3D Hinged Page Sidebar - ~240px wide):
+              Angled toward the right like a 3D page (.glass-sidebar-3d) hinged at its right seam
+             ───────────────────────────────────────────────────────────────────────── */}
+          <aside
+            dir="rtl"
+            className="no-print hidden md:flex w-[225px] lg:w-[240px] shrink-0 glass-sidebar-3d p-5 flex-col justify-between select-none relative z-20"
+          >
+          {/* Top User / Workspace Profile & Vertical Navigation Menu */}
+          <div className="space-y-5">
+            {/* Empty Brand / Logo Slot (reserved until site name is chosen) */}
+            <div className="flex items-center gap-3 pb-4 border-b border-white/12 min-h-[56px]" />
 
-      {/* Progress Card during PDF Generation — Matches Clean White & Blue Site Design */}
-      {isGeneratingPdf && pdfProgress && (
-        <div className="no-print max-w-4xl w-full mx-auto px-4 sm:px-6 pt-4">
-          <div className="bg-white border border-[#DCE7FF] rounded-2xl p-4 sm:p-5 shadow-[0_10px_30px_rgba(37,99,235,0.08)] flex flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-xl bg-[#EFF6FF] text-[#2563EB] flex items-center justify-center shrink-0">
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                </div>
-                <div className="min-w-0">
-                  <div className="font-heading font-extrabold text-slate-900 text-xs sm:text-sm truncate">
-                    ئامادەکرنا پەرتووکا بادینی ب شێوەیێ PDF ({activeBookFont.shortLabel})
-                  </div>
-                  <p className="font-subtext text-[11px] text-slate-500">
-                    دەمێ مای یێ تەخمینی:{' '}
-                    {formatDurationKurdish(
-                      Math.max(1, Math.ceil((pdfProgress.total - pdfProgress.current) * 0.12))
+            {/* Full Vertical Navigation Menu with BOTH Icons AND Kurdish Labels */}
+            <nav className="space-y-1.5">
+              {mainSections.map((sec) => {
+                const isActive = activeSection === sec.id;
+                return (
+                  <button
+                    key={sec.id}
+                    type="button"
+                    onClick={() => setActiveSection(sec.id)}
+                    className={`relative w-full flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-2xl text-xs font-heading font-bold transition-colors cursor-pointer ${
+                      isActive
+                        ? 'text-white'
+                        : 'text-white/65 hover:text-white hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    {isActive && (
+                      <motion.div
+                        layoutId="sidebarActivePill"
+                        transition={{
+                          type: 'spring',
+                          stiffness: 380,
+                          damping: 30,
+                          mass: 0.8,
+                        }}
+                        className="absolute inset-0 rounded-2xl bg-white/[0.13] border border-white/20 shadow-[inset_0_1px_1px_rgba(255,255,255,0.3),0_8px_20px_rgba(0,0,0,0.35)]"
+                      />
                     )}
-                  </p>
-                </div>
-              </div>
-              <span className="px-3 py-1 rounded-full bg-[#EFF6FF] text-[#1E40AF] font-heading font-extrabold text-xs tabular-nums shrink-0">
-                {toEasternArabicNumerals(pdfProgress.current)} /{' '}
-                {toEasternArabicNumerals(pdfProgress.total)} (
-                {toEasternArabicNumerals(
-                  Math.round((pdfProgress.current / pdfProgress.total) * 100)
-                )}
-                ٪)
-              </span>
-            </div>
-            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-[#2563EB] rounded-full transition-all duration-150"
-                style={{
-                  width: `${Math.round((pdfProgress.current / pdfProgress.total) * 100)}%`,
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Progress Card during Uploaded Book Translation — Clean White & Blue Studio Card (Matches Screenshot 10 Fix) */}
-      {isTranslatingUpload && uploadProgress && (
-        <div className="no-print max-w-4xl w-full mx-auto px-4 sm:px-6 pt-4">
-          <div className="bg-white border border-[#DCE7FF] rounded-2xl p-4 sm:p-5 shadow-[0_12px_35px_rgba(37,99,235,0.08)] flex flex-col gap-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-[#EFF6FF] text-[#2563EB] flex items-center justify-center shrink-0">
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                </div>
-                <div className="min-w-0">
-                  <div className="font-heading font-extrabold text-slate-900 text-xs sm:text-sm leading-snug">
-                    {uploadProgress.status}
-                  </div>
-                  <p className="font-subtext text-[11px] sm:text-xs text-slate-500 mt-0.5">
-                    دەمێ بۆری: {formatDurationKurdish(uploadElapsedSec)} · دەمێ مای:{' '}
-                    <span className="font-bold text-[#2563EB]">
-                      {formatDurationKurdish(remainingPdfUploadSec)}
+                    <span className="relative z-10 flex items-center gap-3 min-w-0">
+                      <span
+                        className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+                          isActive
+                            ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-[0_0_14px_rgba(59,130,246,0.55)]'
+                            : 'bg-white/[0.06] text-white/70 border border-white/10'
+                        }`}
+                      >
+                        {sec.icon}
+                      </span>
+                      <span className="truncate">{sec.shortLabel}</span>
                     </span>
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
-                <span className="px-3 py-1 rounded-full bg-[#F8FAFF] border border-[#DCE7FF] text-[#1E3A8A] font-heading font-extrabold text-xs tabular-nums">
-                  {toEasternArabicNumerals(uploadProgress.done)} /{' '}
-                  {toEasternArabicNumerals(uploadProgress.total)} لاپەر
-                </span>
-                <button
-                  type="button"
-                  onClick={handleStopServerJob}
-                  className="px-3 py-1 rounded-full bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-heading font-bold text-xs transition-colors cursor-pointer"
-                >
-                  راوەستاندن
-                </button>
-              </div>
-            </div>
-
-            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-l from-[#2563EB] to-[#3B82F6] rounded-full transition-all duration-300"
-                style={{
-                  width: `${Math.max(
-                    5,
-                    Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)
-                  )}%`,
-                }}
-              />
-            </div>
+                    {isActive && (
+                      <span className="relative z-10 w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_10px_2px_rgba(59,130,246,0.95)] shrink-0" />
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
           </div>
-        </div>
-      )}
 
-      {/* Download / Translation Completion Notification Card */}
-      {downloadSuccessMsg && !isGeneratingPdf && (
-        <div className="no-print max-w-4xl w-full mx-auto px-4 sm:px-6 pt-4">
-          <div className="bg-white border border-emerald-200 rounded-2xl p-3.5 sm:p-4 shadow-[0_10px_30px_rgba(16,185,129,0.08)] flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2.5">
-              <span className="w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center shrink-0">
-                <Check className="w-4 h-4" />
-              </span>
-              <span className="font-heading font-bold text-slate-900">{downloadSuccessMsg}</span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {preparedFiles.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setActivePreparedFile(preparedFiles[0])}
-                  className="px-3.5 py-1.5 rounded-xl bg-[#2563EB] text-white font-heading font-bold hover:bg-[#1D4ED8] transition-colors cursor-pointer"
-                >
-                  ڤەکرنا جهێ سەیڤکرنێ
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setDownloadSuccessMsg(null)}
-                className="px-2.5 py-1.5 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 font-subtext cursor-pointer shrink-0"
-              >
-                داخستن
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* =====================================================================
-          SECTION 1: READER ("بەشێ ١: خوێندنا پەرتووکێ") — Organized & Beautified White Studio Layout
-         ===================================================================== */}
-      {activeSection === 'reader' && (
-        <main className="no-print flex-1 max-w-5xl w-full mx-auto px-3 sm:px-6 pt-2 pb-6 sm:py-6 flex flex-col items-center gap-4">
-          {/* Unified Book Title & Studio Reader Toolbar Card */}
-          <div className="w-full max-w-[780px] bg-white border border-slate-100 rounded-2xl p-4 sm:p-5 space-y-3.5 shadow-[0_10px_35px_rgba(15,23,42,0.04)]">
-            {/* Top Row: Active Book Title + Quick Actions (Design & Edit) */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span className="w-9 h-9 rounded-xl bg-[#EFF6FF] text-[#2563EB] flex items-center justify-center shrink-0">
-                  <BookOpen className="w-4 h-4" />
+          {/* Bottom Sidebar Footer: Active Book Info & Quick PDF Download */}
+          <div className="pt-4 border-t border-white/12 space-y-3">
+            <div
+              onClick={() => setActiveSection('reader')}
+              className="glass-inner-card p-3 cursor-pointer"
+            >
+              <div className="flex items-center justify-between text-[10px] text-white/55 mb-1">
+                <span>پەرتووکا چالاک</span>
+                <span className="text-emerald-400 font-bold tabular-nums">
+                  {toEasternArabicNumerals(maxPageCount)} لاپەر
                 </span>
-                <div className="min-w-0">
-                  <h1 className="font-heading font-extrabold text-slate-900 text-xs sm:text-sm truncate">
-                    {activeBook.title}
-                  </h1>
-                  <p className="font-subtext text-[11px] text-slate-500">
-                    لاپەرێ {toEasternArabicNumerals(currentPage)} ژ سەرجەمێ{' '}
-                    {toEasternArabicNumerals(maxPageCount)} لاپەران
-                  </p>
-                </div>
               </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('chat')}
-                  className="px-3.5 py-2 text-xs font-heading font-bold text-[#1E40AF] bg-[#EFF6FF] hover:bg-[#DBEAFE] rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Palette className="w-3.5 h-3.5 text-[#2563EB]" />
-                  <span>دیزاین و رەنگ</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setEditingPageNumber(currentPage)}
-                  className="px-3.5 py-2 text-xs font-heading font-bold text-slate-800 bg-slate-100 hover:bg-slate-200/80 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Edit3 className="w-3.5 h-3.5 text-[#2563EB]" />
-                  <span>دەستکاریا لاپەری</span>
-                </button>
+              <div className="text-[11px] font-heading font-bold text-white truncate">
+                {activeBook.title}
               </div>
             </div>
 
-            {/* Bottom Row: Page Stepper, Book Font Selector, Font Size & View Mode */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              {/* Page Stepper */}
-              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 rounded-xl p-1">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setCurrentPage((prev) => Math.max(1, prev - (viewMode === 'spread' ? 2 : 1)))
-                  }
-                  disabled={currentPage <= 1}
-                  className="w-8 h-8 flex items-center justify-center rounded-lg bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-700 shadow-2xs transition-all cursor-pointer"
-                  title="لاپەرێ بەرێ"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
+            <button
+              type="button"
+              onClick={handleDownloadFullPdf}
+              disabled={isGeneratingPdf}
+              className="w-full py-2.5 px-4 rounded-2xl bg-gradient-to-r from-blue-500 to-blue-600 hover:brightness-110 text-white text-xs font-heading font-bold flex items-center justify-center gap-2 shadow-[0_8px_20px_rgba(37,99,235,0.4),inset_0_1px_1px_rgba(255,255,255,0.3)] transition-all cursor-pointer disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5 text-white" />
+              <span>داگرتنا PDF</span>
+            </button>
+          </div>
+          </aside>
 
-                <div className="flex items-center gap-1 text-xs px-2">
-                  <span className="font-subtext text-slate-500">لاپەر</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={maxPageCount}
-                    value={currentPage}
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      if (val >= 1 && val <= maxPageCount) setCurrentPage(val);
-                    }}
-                    className="w-12 py-0.5 text-center font-heading font-bold bg-white border border-slate-200 rounded-lg tabular-nums text-slate-900"
-                  />
-                  <span className="font-subtext text-slate-500 tabular-nums">
-                    / {toEasternArabicNumerals(maxPageCount)}
-                  </span>
+          {/* ─────────────────────────────────────────────────────────────────────────
+              COLUMN 2 (Center Area hinged to the right edge of the 3D Sidebar - flex-1):
+             ───────────────────────────────────────────────────────────────────────── */}
+          <main
+            dir="rtl"
+            className="glass-main-panel-3d flex-1 min-w-0 p-2.5 sm:p-5 lg:h-full overflow-y-auto overflow-x-hidden dark-scrollbar flex flex-col gap-3 sm:gap-4 relative z-10"
+          >
+          {/* ─── Progress: PDF Generation ─── */}
+          {isGeneratingPdf && pdfProgress && (
+            <div className="no-print bg-white/[0.06] border border-white/15 rounded-2xl p-4 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)] space-y-3 shrink-0">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-2xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shrink-0">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-heading font-extrabold text-white text-xs sm:text-sm truncate">
+                      ئامادەکرنا پەرتووکا بادینی ب شێوەیێ PDF ({activeBookFont.shortLabel})
+                    </div>
+                    <p className="font-subtext text-[11px] text-white/60">
+                      دەمێ مای یێ تەخمینی:{' '}
+                      {formatDurationKurdish(
+                        Math.max(1, Math.ceil((pdfProgress.total - pdfProgress.current) * 0.12))
+                      )}
+                    </p>
+                  </div>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setCurrentPage((prev) =>
-                      Math.min(maxPageCount, prev + (viewMode === 'spread' ? 2 : 1))
-                    )
-                  }
-                  disabled={currentPage >= maxPageCount}
-                  className="w-8 h-8 flex items-center justify-center rounded-lg bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-700 shadow-2xs transition-all cursor-pointer"
-                  title="لاپەرێ پاشتر"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Font Family, Font Size & View Mode */}
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 rounded-xl px-3 py-1.5 text-xs">
-                  <Type className="w-3.5 h-3.5 text-[#2563EB] shrink-0" />
-                  <select
-                    value={bookFontId}
-                    onChange={(e) => handleSelectBookFont(e.target.value)}
-                    aria-label="فۆنتێ پەرتووکێ"
-                    className="bg-transparent font-heading font-bold text-slate-800 focus:outline-none cursor-pointer"
-                  >
-                    {BOOK_FONT_OPTIONS.map((fontOpt) => (
-                      <option key={fontOpt.id} value={fontOpt.id}>
-                        {fontOpt.shortLabel}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex items-center gap-1 bg-slate-50 border border-slate-200/80 rounded-xl px-2 py-1 text-xs">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFontSizePt((s) => Math.max(13.5, Number((s - 0.5).toFixed(1))))
-                    }
-                    className="w-6 h-6 flex items-center justify-center bg-white hover:bg-slate-100 rounded-lg font-bold text-slate-700 shadow-2xs cursor-pointer"
-                    title="بچیککرنا فۆنتی"
-                  >
-                    -
-                  </button>
-                  <span className="tabular-nums font-heading font-bold px-1.5 text-slate-800">
-                    {toEasternArabicNumerals(fontSizePt)}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFontSizePt((s) => Math.min(20, Number((s + 0.5).toFixed(1))))
-                    }
-                    className="w-6 h-6 flex items-center justify-center bg-white hover:bg-slate-100 rounded-lg font-bold text-slate-700 shadow-2xs cursor-pointer"
-                    title="مەزنکرنا فۆنتی"
-                  >
-                    +
-                  </button>
-                </div>
-
-                {/* View Mode Switcher on Desktop */}
-                <div className="hidden sm:flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('single')}
-                    className={`px-3 py-1 text-xs font-heading font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
-                      viewMode === 'single'
-                        ? 'bg-[#2563EB] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    تاک لاپەر
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('spread')}
-                    className={`hidden lg:inline-flex px-3 py-1 text-xs font-heading font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
-                      viewMode === 'spread'
-                        ? 'bg-[#2563EB] text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    دوو لاپەر
-                  </button>
-                  {activeBook.originalPdfUrl && (
-                    <button
-                      type="button"
-                      onClick={() => setViewMode('compare')}
-                      className={`px-3 py-1 text-xs font-heading font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
-                        viewMode === 'compare'
-                          ? 'bg-[#2563EB] text-white shadow-2xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <Columns className="w-3.5 h-3.5 inline ml-1" />
-                      بەراوردکرن
-                    </button>
+                <span className="px-3.5 py-1 rounded-full bg-white/10 border border-white/15 text-white font-heading font-extrabold text-xs tabular-nums shrink-0">
+                  {toEasternArabicNumerals(pdfProgress.current)} /{' '}
+                  {toEasternArabicNumerals(pdfProgress.total)} (
+                  {toEasternArabicNumerals(
+                    Math.round((pdfProgress.current / pdfProgress.total) * 100)
                   )}
-                </div>
+                  ٪)
+                </span>
+              </div>
+              <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 to-sky-400 rounded-full transition-all duration-150"
+                  style={{
+                    width: `${Math.round((pdfProgress.current / pdfProgress.total) * 100)}%`,
+                  }}
+                />
               </div>
             </div>
+          )}
 
-            {/* Audio Player & Linked Audio Lessons Bar if the active book has audio tracks */}
-            {(activeBook.audioUrl ||
-              (activeBook.audioTracks && activeBook.audioTracks.length > 0)) && (
-              <div className="pt-3 border-t border-slate-100 flex flex-col gap-2.5">
-                {activeBook.audioUrl && (
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-[#F8FAFF] border border-[#DCE7FF] rounded-xl px-3.5 py-2.5">
-                    <div className="flex items-center gap-2 text-xs">
-                      <Headphones className="w-4 h-4 text-[#2563EB] shrink-0" />
-                      <span className="font-heading font-bold text-slate-800">
-                        گوهداریکرنا دەنگێ وانێ ل گەل خواندنێ:
+          {/* ─── Progress: Upload Translation ─── */}
+          {isTranslatingUpload && uploadProgress && (
+            <div className="no-print bg-white/[0.06] border border-white/15 rounded-2xl p-4 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)] space-y-3 shrink-0">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-2xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shrink-0">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-heading font-extrabold text-white text-xs sm:text-sm leading-snug">
+                      {uploadProgress.status}
+                    </div>
+                    <p className="font-subtext text-[11px] sm:text-xs text-white/60 mt-0.5">
+                      دەمێ بۆری: {formatDurationKurdish(uploadElapsedSec)} · دەمێ مای:{' '}
+                      <span className="font-bold text-blue-300">
+                        {formatDurationKurdish(remainingPdfUploadSec)}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
+                  <span className="px-3.5 py-1 rounded-full bg-white/10 border border-white/15 text-white font-heading font-extrabold text-xs tabular-nums">
+                    {toEasternArabicNumerals(uploadProgress.done)} /{' '}
+                    {toEasternArabicNumerals(uploadProgress.total)} لاپەر
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleStopServerJob}
+                    className="px-3.5 py-1 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-400/30 font-heading font-bold text-xs transition-colors cursor-pointer"
+                  >
+                    راوەستاندن
+                  </button>
+                </div>
+              </div>
+
+              <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 to-sky-400 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${Math.max(
+                      5,
+                      Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ─── Success Notification ─── */}
+          {downloadSuccessMsg && !isGeneratingPdf && (
+            <div className="no-print bg-emerald-500/15 border border-emerald-400/30 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)] shrink-0">
+              <div className="flex items-center gap-2.5">
+                <span className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-400/30 flex items-center justify-center shrink-0">
+                  <Check className="w-4 h-4" />
+                </span>
+                <span className="font-heading font-bold text-white">{downloadSuccessMsg}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {preparedFiles.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setActivePreparedFile(preparedFiles[0])}
+                    className="amber-pill text-xs"
+                  >
+                    ڤەکرنا جهێ سەیڤکرنێ
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setDownloadSuccessMsg(null)}
+                  className="px-3 py-1 rounded-full text-white/60 hover:text-white hover:bg-white/10 font-subtext cursor-pointer shrink-0"
+                >
+                  داخستن
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ─── 3. ACTIVE SECTION CONTENT INSIDE CENTER GLASS WINDOW ─── */}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeSection}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.28, ease: 'easeOut' }}
+              className="flex-1 flex flex-col gap-5"
+            >
+              {/* ═══════════════════════════════════════════════════════════
+                  ACTIVE VIEW: UPLOAD / MAIN TRANSLATION WORKSPACE
+                 ═══════════════════════════════════════════════════════════ */}
+              {activeSection === 'upload' && (
+                <div className="glass-inner-card p-3 sm:p-4 space-y-3 flex-1 flex flex-col justify-between">
+                  {/* Card Header with Format Pill Badges (.PDF, .DOC, .PPTX) */}
+                  <div
+                    style={{ paddingBottom: '10.6875px', marginBottom: '10.125px' }}
+                    className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-gradient-to-br from-blue-500/30 to-blue-600/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shadow-[0_0_16px_rgba(59,130,246,0.2)] shrink-0">
+                        <Upload className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <h2 className="font-heading font-bold text-white text-xs sm:text-sm">
+                            وەرگێڕانا پەرتووکان بۆ بادینی
+                          </h2>
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-400/25 text-[9px] font-heading font-bold">
+                            ئامادەیە
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-white/60">
+                          فایلەکا عەرەبی هەلبژێرە یان بکێشە ئێرە بۆ وەرگێڕانا دێڕ ب دێڕ بۆ کوردییا بادینی
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      {['.PDF', '.DOC', '.PPTX'].map((fmt) => (
+                        <span
+                          key={fmt}
+                          className="px-2 py-0.5 rounded-full bg-white/8 border border-white/12 text-[9px] font-heading font-bold text-white/80"
+                        >
+                          {fmt}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Drag & Drop Upload Zone */}
+                  <label
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const file = e.dataTransfer.files?.[0];
+                      if (!file) return;
+                      setSelectedPdfFile(file);
+                      setCustomBookTitleInput(
+                        file.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ')
+                      );
+                      try {
+                        const arr = await file.arrayBuffer();
+                        const doc = await PDFDocument.load(arr, { ignoreEncryption: true });
+                        const pgCount = doc.getPageCount();
+                        setSelectedPdfPageCount(pgCount);
+                        setUploadStartPage(1);
+                        setUploadEndPage(pgCount);
+                      } catch {
+                        setSelectedPdfPageCount(0);
+                      }
+                    }}
+                    className="relative flex flex-col items-center justify-center p-4 sm:p-6 border-2 border-dashed border-white/20 hover:border-blue-400/60 rounded-2xl bg-black/30 hover:bg-black/40 cursor-pointer transition-all group shadow-[inset_0_1px_1px_rgba(255,255,255,0.12)]"
+                  >
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setSelectedPdfFile(file);
+                        setCustomBookTitleInput(
+                          file.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ')
+                        );
+                        try {
+                          const arr = await file.arrayBuffer();
+                          const doc = await PDFDocument.load(arr, { ignoreEncryption: true });
+                          const pgCount = doc.getPageCount();
+                          setSelectedPdfPageCount(pgCount);
+                          setUploadStartPage(1);
+                          setUploadEndPage(pgCount);
+                        } catch {
+                          setSelectedPdfPageCount(0);
+                        }
+                        e.target.value = '';
+                      }}
+                      className="hidden"
+                    />
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 text-white flex items-center justify-center mb-2 shadow-[0_0_20px_rgba(59,130,246,0.4),inset_0_1px_1px_rgba(255,255,255,0.35)] group-hover:scale-105 transition-transform">
+                      <Upload className="w-4 h-4 text-white" />
+                    </div>
+                    <p className="text-xs sm:text-sm font-heading font-bold text-white mb-0.5 text-center">
+                      فایلەکا PDF ب عەرەبی ئێرە بهنێرە یان کلیک بکە
+                    </p>
+                    <p className="text-[11px] text-white/60 mb-2.5 text-center">
+                      پشتەڤانیا هەمی لاپەڕێن پەرتووکێ دکەت ب فۆنت و دیزاینا فەرمی
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-1.5">
+                      <span className="px-2.5 py-0.5 rounded-full bg-white/10 border border-white/15 text-[10px] font-heading font-bold text-white/90">
+                        .PDF پەرتووک
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-white/10 border border-white/15 text-[10px] font-heading font-bold text-white/90">
+                        .DOC فایلا نڤیسینێ
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-white/10 border border-white/15 text-[10px] font-heading font-bold text-white/90">
+                        .PPTX سڵاید
                       </span>
                     </div>
-                    <audio
-                      controls
-                      src={activeBook.audioUrl}
-                      className="h-8 w-full sm:w-72 max-w-full"
-                    />
-                  </div>
-                )}
+                  </label>
 
-                {activeBook.audioTracks && activeBook.audioTracks.length > 0 && (
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[11px] font-heading font-bold text-slate-500">
-                        وانەیێن ڤێ پەرتووکێ:
-                      </span>
-                      {activeBook.audioTracks.map((trk, idx) => {
-                        const isCurrentTrack =
-                          currentPage >= trk.startPage && currentPage <= trk.endPage;
-                        return (
-                          <div
-                            key={trk.id}
-                            className={`inline-flex items-center rounded-lg border transition-all overflow-hidden ${
-                              isCurrentTrack
-                                ? 'bg-[#2563EB] text-white border-[#2563EB]'
-                                : 'bg-slate-100 text-slate-700 border-slate-200/80 hover:bg-slate-200/80'
-                            }`}
+                  {/* Selected File Info & Translation Controls */}
+                  {selectedPdfFile && (
+                    <div className="space-y-3 p-3 rounded-2xl bg-black/35 border border-white/12 shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)]">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shrink-0">
+                            <FileSpreadsheet className="w-3.5 h-3.5" />
+                          </div>
+                          <span className="text-xs font-heading font-bold text-white truncate">
+                            {selectedPdfFile.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/10 border border-white/15 text-[10px] font-heading font-bold text-emerald-400">
+                            {toEasternArabicNumerals(selectedPdfPageCount)} لاپەر
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedPdfFile(null);
+                              setSelectedPdfPageCount(0);
+                            }}
+                            title="ژێبرنا فایلی"
+                            className="w-6 h-6 rounded-full bg-red-500/20 hover:bg-red-500/35 text-red-300 flex items-center justify-center cursor-pointer"
                           >
-                            <button
-                              type="button"
-                              onClick={() => setCurrentPage(trk.startPage)}
-                              className={`px-2.5 py-1 text-[11px] cursor-pointer ${
-                                isCurrentTrack ? 'font-heading font-bold' : 'font-subtext'
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-bold text-white/60 mb-1">
+                            ناڤێ پەرتووکا بادینی
+                          </label>
+                          <input
+                            type="text"
+                            value={customBookTitleInput}
+                            onChange={(e) => setCustomBookTitleInput(e.target.value)}
+                            className="w-full px-3.5 py-2 text-xs bg-black/40 border border-white/15 rounded-xl text-white placeholder:text-white/40 focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-white/60 mb-1">
+                            ژ لاپەری
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={selectedPdfPageCount}
+                            value={uploadStartPage}
+                            onChange={(e) =>
+                              setUploadStartPage(Math.max(1, Number(e.target.value)))
+                            }
+                            className="w-full px-3.5 py-2 text-xs bg-black/40 border border-white/15 rounded-xl text-white focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-white/60 mb-1">
+                            هەتا لاپەری
+                          </label>
+                          <input
+                            type="number"
+                            min={uploadStartPage}
+                            max={selectedPdfPageCount}
+                            value={uploadEndPage}
+                            onChange={(e) =>
+                              setUploadEndPage(
+                                Math.max(uploadStartPage, Number(e.target.value))
+                              )
+                            }
+                            className="w-full px-3.5 py-2 text-xs bg-black/40 border border-white/15 rounded-xl text-white focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                        <p className="text-xs text-white/60">
+                          دەمێ پێدڤی:{' '}
+                          <span className="font-bold text-white">
+                            {formatDurationKurdish(estimatedPdfTotalSec)}
+                          </span>
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleStartTranslateUploadedPdf}
+                          disabled={isTranslatingUpload || !selectedPdfFile}
+                          className="amber-pill text-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          {isTranslatingUpload ? (
+                            <>
+                              <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                              <span>وەرگێران...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-4 h-4 text-white" />
+                              <span>وەرگێرانا بۆ بادینی</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {uploadError && (
+                        <div className="p-3 rounded-xl bg-red-500/20 border border-red-400/30 text-red-200 text-xs">
+                          {uploadError}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Quick Resume Reading Strip inside Center Window */}
+                  <div
+                    style={{
+                      paddingTop: '10.5px',
+                      paddingBottom: '10.5px',
+                      paddingLeft: '10.5px',
+                      paddingRight: '10.5px',
+                    }}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-black/35 border border-white/12 shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)]"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-blue-300 shrink-0">
+                        <BookOpen className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-heading font-bold text-white/60">
+                          پەرتووکا چالاک بۆ خویندنێ
+                        </div>
+                        <div className="text-xs font-heading font-bold text-white truncate">
+                          {activeBook.title}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveSection('reader')}
+                      className="amber-pill text-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                    >
+                      <BookOpen className="w-3.5 h-3.5 text-white" />
+                      <span>ڤەکرنا خویندنگەهێ ({toEasternArabicNumerals(pages.length)} لاپەر)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ═══════════════════════════════════════════════════════════
+                  ACTIVE VIEW: READER (Inside Center Glass Window)
+                 ═══════════════════════════════════════════════════════════ */}
+              {activeSection === 'reader' && (
+                <div className="glass-inner-card p-3 sm:p-4 space-y-3">
+                  {/* Book Title & Toolbar */}
+                  <div
+                    style={{ paddingBottom: '10.6875px', marginBottom: '10.125px' }}
+                    className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shrink-0">
+                        <BookOpen className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <h2 className="font-heading font-extrabold text-white text-xs sm:text-sm truncate">
+                          {activeBook.title}
+                        </h2>
+                        <p className="font-subtext text-[10px] sm:text-[11px] text-white/60">
+                          لاپەرێ {toEasternArabicNumerals(currentPage)} ژ سەرجەمێ{' '}
+                          {toEasternArabicNumerals(maxPageCount)} لاپەران
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setIsReaderAgentOpen((prev) => !prev)}
+                        className={`px-2.5 py-1 text-[11px] font-heading font-bold rounded-full transition-all flex items-center gap-1 cursor-pointer border ${
+                          isReaderAgentOpen
+                            ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white border-blue-400/50 shadow-[0_0_14px_rgba(37,99,235,0.45)]'
+                            : 'text-white bg-white/8 hover:bg-white/15 border-white/12'
+                        }`}
+                      >
+                        <Sparkles className="w-3 h-3 text-blue-200" />
+                        <span>شیرەتکارێ زیرەک</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveSection('chat')}
+                        className="px-2.5 py-1 text-[11px] font-heading font-bold text-white bg-white/8 hover:bg-white/15 rounded-full transition-colors flex items-center gap-1 cursor-pointer border border-white/12"
+                      >
+                        <Palette className="w-3 h-3 text-blue-300" />
+                        <span>دیزاین</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setEditingPageNumber(currentPage)}
+                        className="amber-pill text-[11px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <Edit3 className="w-3 h-3 text-white" />
+                        <span>دەستکاری</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Inline Autonomous Smart Assistant Drawer inside Reader */}
+                  {isReaderAgentOpen && (
+                    <div className="p-3 rounded-2xl bg-black/45 border border-blue-400/30 space-y-2.5 shadow-xl">
+                      <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/10">
+                        <div className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-lg bg-blue-500/25 border border-blue-400/40 text-blue-300 flex items-center justify-center">
+                            <Sparkles className="w-3 h-3" />
+                          </span>
+                          <div>
+                            <h3 className="text-xs font-heading font-bold text-white">
+                              شیرەتکارێ زیرەک (لاپەرێ {toEasternArabicNumerals(currentPage)})
+                            </h3>
+                            <p className="text-[10px] text-white/60">
+                              راستڤەکرنا دەقێ لاپەری، گەڕیان، دووبارە وەرگێڕان، یان چوونا سەر لاپەرەکی
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsReaderAgentOpen(false)}
+                          className="w-6 h-6 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/70 hover:text-white cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+
+                      {/* Recent Chat Messages inside Reader Drawer */}
+                      <div className="max-h-48 overflow-y-auto dark-scrollbar space-y-2.5 p-3 rounded-xl bg-black/35 border border-white/10">
+                        {chatMessages.slice(-4).map((msg) => (
+                          <div
+                            key={msg.id}
+                            className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
+                          >
+                            <div
+                              className={`max-w-[88%] px-3.5 py-2.5 rounded-2xl text-xs leading-relaxed ${
+                                msg.role === 'user'
+                                  ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-tr-sm'
+                                  : 'bg-white/10 text-white border border-white/15 rounded-tl-sm'
                               }`}
                             >
-                              وانا {toEasternArabicNumerals(idx + 1)} (ل{' '}
-                              {toEasternArabicNumerals(trk.startPage)}–
-                              {toEasternArabicNumerals(trk.endPage)})
+                              {msg.executedToolCalls && msg.executedToolCalls.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mb-1.5">
+                                  {msg.executedToolCalls.map((tc, tIdx) => (
+                                    <span
+                                      key={tIdx}
+                                      className="px-2 py-0.5 rounded-full bg-blue-500/25 border border-blue-400/35 text-[10px] font-heading font-bold text-blue-200"
+                                    >
+                                      ⚡ {tc.summaryKurdish}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <p className="font-subtext whitespace-pre-wrap">{msg.text}</p>
+                              {msg.role === 'assistant' &&
+                                !msg.reverted &&
+                                ((msg.didModifyPage && msg.previousPageSnapshot) ||
+                                  (msg.didUpdateDesign &&
+                                    (msg.previousDesignSnapshot || msg.previousPagesSnapshot))) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUndoChatAction(msg)}
+                                    className="mt-2 px-3 py-1 rounded-full bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/40 text-[10px] font-heading font-bold text-amber-200 hover:text-white cursor-pointer flex items-center gap-1.5 transition-colors"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                    <span>زڤڕاندن (Undo)</span>
+                                  </button>
+                                )}
+                              {msg.reverted && (
+                                <span className="mt-1.5 inline-block text-[10px] text-emerald-300 font-heading font-bold">
+                                  ✓ هاتە زڤڕاندن
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                        {isChatLoading && (
+                          <div className="flex items-center gap-2 text-xs text-blue-200 bg-blue-500/15 border border-blue-400/30 px-3.5 py-2 rounded-xl w-fit">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-300" />
+                            <span className="font-heading font-bold">
+                              🧠 یێ هزر دکەت و کار دکەت...
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Quick Input inside Reader Drawer */}
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              void handleSendChatMessage();
+                            }
+                          }}
+                          placeholder="فەرمانەکێ بدە شیرەتکارێ زیرەک (بۆ نموونە: ئەڤی لاپەری راستڤەکە یان بچۆ لاپەرێ ٨)..."
+                          className="flex-1 px-3.5 py-2 text-xs bg-black/45 border border-white/15 rounded-xl text-white placeholder:text-white/40 focus:outline-none focus:border-blue-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleSendChatMessage()}
+                          disabled={isChatLoading || !chatInput.trim()}
+                          className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-500 to-blue-600 hover:brightness-110 text-white text-xs font-heading font-bold flex items-center gap-1.5 disabled:opacity-40 cursor-pointer shrink-0"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>هنارتن</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Page Controls + Search Row */}
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    {/* Page Stepper */}
+                    <div className="flex items-center gap-1.5 bg-black/35 border border-white/12 rounded-full p-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCurrentPage((prev) =>
+                            Math.max(1, prev - (viewMode === 'spread' ? 2 : 1))
+                          )
+                        }
+                        disabled={currentPage <= 1}
+                        className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white border border-white/12 transition-all cursor-pointer"
+                        title="لاپەرێ بەرێ"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+
+                      <div className="flex items-center gap-1 text-xs px-2">
+                        <span className="font-subtext text-white/60">لاپەر</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={maxPageCount}
+                          value={currentPage}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (val >= 1 && val <= maxPageCount) setCurrentPage(val);
+                          }}
+                          className="w-12 py-0.5 text-center font-heading font-bold bg-white/10 border border-white/15 rounded-full tabular-nums text-white"
+                        />
+                        <span className="font-subtext text-white/60 tabular-nums">
+                          / {toEasternArabicNumerals(maxPageCount)}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCurrentPage((prev) =>
+                            Math.min(maxPageCount, prev + (viewMode === 'spread' ? 2 : 1))
+                          )
+                        }
+                        disabled={currentPage >= maxPageCount}
+                        className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white border border-white/12 transition-all cursor-pointer"
+                        title="لاپەرێ پاشتر"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Font & View Mode */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-1.5 bg-black/35 border border-white/12 rounded-full px-3 py-1 text-xs">
+                        <Type className="w-3.5 h-3.5 text-blue-300 shrink-0" />
+                        <select
+                          value={bookFontId}
+                          onChange={(e) => handleSelectBookFont(e.target.value)}
+                          aria-label="فۆنتێ پەرتووکێ"
+                          className="bg-transparent font-heading font-bold text-white focus:outline-none cursor-pointer"
+                        >
+                          {BOOK_FONT_OPTIONS.map((fontOpt) => (
+                            <option
+                              key={fontOpt.id}
+                              value={fontOpt.id}
+                              className="bg-[#18181B] text-white"
+                            >
+                              {fontOpt.shortLabel}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex items-center gap-1 bg-black/35 border border-white/12 rounded-full px-2 py-1 text-xs">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFontSizePt((s) => Math.max(13.5, Number((s - 0.5).toFixed(1))))
+                          }
+                          className="w-6 h-6 flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/12 rounded-full font-bold text-white cursor-pointer"
+                        >
+                          -
+                        </button>
+                        <span className="tabular-nums font-heading font-bold px-1.5 text-white">
+                          {toEasternArabicNumerals(fontSizePt)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFontSizePt((s) => Math.min(20, Number((s + 0.5).toFixed(1))))
+                          }
+                          className="w-6 h-6 flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/12 rounded-full font-bold text-white cursor-pointer"
+                        >
+                          +
+                        </button>
+                      </div>
+
+                      {/* View Mode Switcher with Sliding Pill */}
+                      <div className="hidden sm:flex items-center gap-1 bg-black/35 p-1 rounded-full border border-white/12">
+                        {(
+                          [
+                            { id: 'single' as const, label: 'تاک لاپەر', hideBelowLg: false },
+                            { id: 'spread' as const, label: 'دوو لاپەر', hideBelowLg: true },
+                            ...(activeBook.originalPdfUrl
+                              ? [{ id: 'compare' as const, label: 'بەراوردکرن', hideBelowLg: false }]
+                              : []),
+                          ]
+                        ).map((vm) => {
+                          const isVmActive = viewMode === vm.id;
+                          return (
+                            <button
+                              key={vm.id}
+                              type="button"
+                              onClick={() => setViewMode(vm.id)}
+                              className={`${
+                                vm.hideBelowLg ? 'hidden lg:inline-flex' : 'inline-flex'
+                              } relative px-3 py-1 text-xs font-heading font-bold rounded-full transition-colors cursor-pointer whitespace-nowrap ${
+                                isVmActive ? 'text-white' : 'text-white/60 hover:text-white'
+                              }`}
+                            >
+                              {isVmActive && (
+                                <motion.div
+                                  layoutId="readerViewModePill"
+                                  transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                                  className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-500 to-blue-600 shadow-xs"
+                                />
+                              )}
+                              <span className="relative z-10 flex items-center gap-1">
+                                {vm.id === 'compare' && <Columns className="w-3.5 h-3.5 inline" />}
+                                {vm.label}
+                              </span>
                             </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quick In-Book Search & Chapter Jump Strip */}
+                  <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-white/10">
+                    <div className="relative flex-1 min-w-[180px]">
+                      <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/50" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="گەران د ناڤ لاپەرێن پەرتووکێ دا..."
+                        className="w-full pr-9 pl-3 py-1.5 text-xs bg-black/35 border border-white/12 rounded-full font-subtext text-white placeholder:text-white/45 focus:outline-none focus:border-blue-300"
+                      />
+                    </div>
+                    {activeBookToc.length > 0 && (
+                      <select
+                        value={currentPage}
+                        onChange={(e) => setCurrentPage(Number(e.target.value))}
+                        className="px-3.5 py-1.5 text-xs bg-black/35 border border-white/12 rounded-full font-heading font-bold text-white focus:outline-none cursor-pointer max-w-[220px] truncate"
+                      >
+                        {activeBookToc.map((ch, idx) => (
+                          <option
+                            key={idx}
+                            value={ch.page}
+                            className="bg-[#18181B] text-white"
+                          >
+                            {ch.title} (ل {toEasternArabicNumerals(ch.page)})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  {/* Search Results Dropdown */}
+                  {searchResults.length > 0 && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-36 overflow-y-auto dark-scrollbar p-2 rounded-2xl bg-black/30 border border-white/10">
+                      {searchResults.slice(0, 6).map((r) => (
+                        <button
+                          key={r.pageNumber}
+                          type="button"
+                          onClick={() => setCurrentPage(r.pageNumber)}
+                          className="text-right p-2 rounded-xl bg-white/5 hover:bg-white/12 border border-white/10 text-[11px] text-white/80 hover:text-white transition-all cursor-pointer"
+                        >
+                          <div className="font-heading font-bold text-blue-300">
+                            لاپەرێ {toEasternArabicNumerals(r.pageNumber)}
+                          </div>
+                          <div className="text-white/60 truncate font-subtext">{r.snippet}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Book Page Canvas */}
+                  {currentPageData && viewMode === 'single' && (
+                    <div className="w-full flex flex-col items-center gap-4 pt-1">
+                      <div className="group relative w-full flex justify-center overflow-x-auto">
+                        <BookPageSheet
+                          page={currentPageData}
+                          fontSizePt={fontSizePt}
+                          zoom={zoom}
+                          headerTitle={activeBook.headerTitle}
+                          bookFontFamily={activeBookFont.cssFamily}
+                          design={activeBookDesign}
+                          onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
+                        />
+                      </div>
+
+                      {/* Bottom Page Turner */}
+                      <div className="w-full max-w-[595px] bg-black/40 border border-white/12 rounded-full p-2 flex items-center justify-between">
+                        <button
+                          type="button"
+                          disabled={currentPage <= 1}
+                          onClick={() => {
+                            setCurrentPage((p) => Math.max(1, p - 1));
+                          }}
+                          className="min-h-[36px] px-4 py-1.5 text-xs font-heading font-bold text-white bg-white/10 hover:bg-white/15 disabled:opacity-40 rounded-full flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all border border-white/12"
+                        >
+                          <ChevronRight className="w-4 h-4" />
+                          <span>لاپەرێ بەرێ</span>
+                        </button>
+
+                        <div className="flex flex-col items-center">
+                          <span className="text-xs font-heading font-extrabold text-white tabular-nums">
+                            لاپەر {toEasternArabicNumerals(currentPage)} ژ{' '}
+                            {toEasternArabicNumerals(maxPageCount)}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={currentPage >= maxPageCount}
+                          onClick={() => {
+                            setCurrentPage((p) => Math.min(maxPageCount, p + 1));
+                          }}
+                          className="min-h-[36px] px-4 py-1.5 text-xs font-heading font-bold text-white bg-gradient-to-r from-blue-500 to-blue-600 hover:brightness-110 disabled:opacity-40 rounded-full shadow-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all"
+                        >
+                          <span>لاپەرێ پاشتر</span>
+                          <ChevronLeft className="w-4 h-4 text-white" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {currentPageData && viewMode === 'spread' && (
+                    <div className="w-full overflow-x-auto pb-4">
+                      <div className="flex flex-col xl:flex-row items-center justify-center gap-5">
+                        <div className="group relative">
+                          <BookPageSheet
+                            page={spreadPages.rightPage}
+                            fontSizePt={fontSizePt}
+                            zoom={Math.min(zoom, 0.72)}
+                            headerTitle={activeBook.headerTitle}
+                            bookFontFamily={activeBookFont.cssFamily}
+                            design={activeBookDesign}
+                            onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
+                          />
+                        </div>
+                        {spreadPages.leftPage && (
+                          <div className="group relative">
+                            <BookPageSheet
+                              page={spreadPages.leftPage}
+                              fontSizePt={fontSizePt}
+                              zoom={Math.min(zoom, 0.72)}
+                              headerTitle={activeBook.headerTitle}
+                              bookFontFamily={activeBookFont.cssFamily}
+                              design={activeBookDesign}
+                              onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {currentPageData && viewMode === 'compare' && (
+                    <div className="w-full grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+                      <div className="flex flex-col items-center space-y-2">
+                        <div className="text-xs font-semibold text-white/75">
+                          لاپەرێ وەرگێرای ب شێوەزارێ بادینی (لاپەر{' '}
+                          {toEasternArabicNumerals(currentPage)})
+                        </div>
+                        <div className="w-full overflow-x-auto flex justify-center">
+                          <BookPageSheet
+                            page={currentPageData}
+                            fontSizePt={fontSizePt}
+                            zoom={0.72}
+                            headerTitle={activeBook.headerTitle}
+                            bookFontFamily={activeBookFont.cssFamily}
+                            design={activeBookDesign}
+                            onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
+                          />
+                        </div>
+                      </div>
+
+                      {activeBook.originalPdfUrl && (
+                        <div className="flex flex-col items-center space-y-2 w-full">
+                          <div className="text-xs font-semibold text-white/75">
+                            لاپەرێ رەسەن یێ پەرتووکا عەرەبی (لاپەر{' '}
+                            {toEasternArabicNumerals(currentPage)})
+                          </div>
+                          <div
+                            style={{
+                              width: `${Math.round(595 * 0.72)}px`,
+                              height: `${Math.round(842 * 0.72)}px`,
+                            }}
+                            className="bg-white border border-white/20 shadow-xl overflow-hidden mx-auto max-w-full rounded-2xl"
+                          >
+                            <iframe
+                              key={currentPage}
+                              src={`${activeBook.originalPdfUrl}#page=${currentPage}`}
+                              className="w-full h-full border-0"
+                              title={`Original Arabic page ${currentPage}`}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ═══════════════════════════════════════════════════════════
+                  ACTIVE VIEW: LIBRARY ("پەرتووکخانەیا تە")
+                 ═══════════════════════════════════════════════════════════ */}
+              {activeSection === 'library' && (
+                <div className="glass-inner-card p-3 sm:p-4 space-y-3">
+                  <div
+                    style={{ paddingBottom: '10.6875px', marginBottom: '10.125px' }}
+                    className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shrink-0">
+                        <Library className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                      </div>
+                      <div>
+                        <h2 className="font-heading font-bold text-white text-xs sm:text-sm">
+                          پەرتووکخانەیا تە ({toEasternArabicNumerals(allBooks.length)} پەرتووک)
+                        </h2>
+                        <p className="text-[11px] text-white/60">
+                          هەمی پەرتووکێن وەرگێڕای و پەرتووکێن دەنگی ب فۆرماتا PDF و Word ئامادەنە
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {deletedBookIds.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleRestoreBuiltInBooks}
+                          className="px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/15 text-white text-[11px] font-heading font-bold flex items-center gap-1 cursor-pointer border border-white/15"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>زڤراندنا پەرتووکێن بنەڕەتی</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setActiveSection('upload')}
+                        className="amber-pill text-[11px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <Upload className="w-3 h-3 text-white" />
+                        <span>پەرتووکا نوی زێدەبکە</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {allBooks.map((book, idx) => {
+                      const isSelected = book.id === activeBookId;
+                      const isAudio = Boolean(
+                        book.audioUrl || (book.audioTracks && book.audioTracks.length > 0)
+                      );
+                      return (
+                        <motion.div
+                          key={book.id}
+                          whileHover={{ y: -2 }}
+                          transition={{ type: 'spring', stiffness: 360, damping: 26 }}
+                          style={
+                            idx === 3
+                              ? {
+                                  paddingBottom: '13.5px',
+                                  paddingRight: '10.5px',
+                                  paddingLeft: '10.5px',
+                                  paddingTop: '13.5px',
+                                }
+                              : {
+                                  paddingLeft: '10.5px',
+                                  paddingTop: '10.5px',
+                                  paddingBottom: '10.5px',
+                                  paddingRight: '10.5px',
+                                }
+                          }
+                          className={`transition-all flex flex-col justify-between gap-2.5 ${
+                            isSelected
+                              ? 'glass-card-dark text-white'
+                              : isAudio
+                              ? 'glass-card-blue text-white'
+                              : 'glass-inner-card text-white'
+                          }`}
+                        >
+                          <div
+                            onClick={() => {
+                              setActiveBookId(book.id);
+                              setCurrentPage(1);
+                              setActiveSection('reader');
+                            }}
+                            className="space-y-1.5 cursor-pointer"
+                          >
+                            <div className="flex items-center justify-between gap-2 text-[10px]">
+                              <span
+                                className={`px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${
+                                  isAudio
+                                    ? 'bg-white/15 text-blue-200 border border-white/20'
+                                    : 'bg-emerald-500/20 text-emerald-400 border border-emerald-400/30'
+                                }`}
+                              >
+                                {isAudio ? (
+                                  <Headphones className="w-3 h-3" />
+                                ) : (
+                                  <FileText className="w-3 h-3" />
+                                )}
+                                {isAudio ? 'پەرتووکا دەنگی / ڤیدیۆ' : 'وەرگێڕای'}
+                              </span>
+                              <span className="text-white/60 font-bold tabular-nums">
+                                {toEasternArabicNumerals(book.pages.length)} لاپەر
+                              </span>
+                            </div>
+                            <h3 className="text-xs sm:text-sm font-heading font-bold leading-relaxed text-white">
+                              {book.title}
+                            </h3>
+                          </div>
+
+                          {/* Individual Audio/Video Lessons inside Book with Delete option */}
+                          {book.audioTracks && book.audioTracks.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pt-1">
+                              {book.audioTracks.map((trk) => (
+                                <div
+                                  key={trk.id}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-black/30 border border-white/12 text-[10px] text-white/85"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveBookId(book.id);
+                                      setCurrentPage(trk.startPage);
+                                      setActiveSection('reader');
+                                    }}
+                                    className="truncate max-w-[140px] hover:text-blue-300 cursor-pointer"
+                                  >
+                                    {trk.title}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteLessonTrack(book.id, trk.id);
+                                    }}
+                                    title="ژێبرنا ڤێ وانێ"
+                                    className="text-red-300 hover:text-red-200 p-0.5 cursor-pointer"
+                                  >
+                                    <X className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/12">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveBookId(book.id);
+                                  setCurrentPage(1);
+                                  setActiveSection('reader');
+                                }}
+                                className="px-2.5 py-1 text-[10px] font-heading font-bold rounded-full cursor-pointer bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-xs"
+                              >
+                                خویندن
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleExportSpecificBookPdf(
+                                    book.pages,
+                                    book.headerTitle,
+                                    undefined,
+                                    book.id
+                                  )
+                                }
+                                className="px-2 py-1 text-[10px] font-bold rounded-full cursor-pointer bg-white/15 text-white hover:bg-white/25 border border-white/15"
+                              >
+                                PDF
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleExportSpecificBookWord(
+                                    book.pages,
+                                    book.headerTitle,
+                                    undefined,
+                                    book.id
+                                  )
+                                }
+                                className="px-2 py-1 text-[10px] font-bold rounded-full cursor-pointer bg-white/15 text-blue-200 hover:bg-white/25 border border-white/15"
+                              >
+                                Word
+                              </button>
+                            </div>
                             <button
                               type="button"
-                              onClick={() => handleDeleteLessonTrack(activeBook.id, trk.id)}
-                              title="ژێبرنا ڤێ وانێ (دەرسێ)"
-                              className={`px-1.5 py-1 border-r transition-colors cursor-pointer ${
-                                isCurrentTrack
-                                  ? 'border-white/25 text-white/90 hover:bg-red-600 hover:text-white'
-                                  : 'border-slate-200 text-slate-400 hover:bg-red-50 hover:text-red-600'
-                              }`}
+                              onClick={() => handleDeleteCustomBook(book.id)}
+                              title="ژێبرن"
+                              className="px-2 py-1 text-[10px] font-heading font-bold text-red-200 bg-red-500/25 border border-red-400/30 rounded-full hover:bg-red-500/40 flex items-center gap-1 cursor-pointer shrink-0"
                             >
-                              <X className="w-3 h-3" />
+                              <Trash2 className="w-3 h-3" />
+                              <span>ژێبرن</span>
                             </button>
                           </div>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ═══════════════════════════════════════════════════════════
+                  ACTIVE VIEW: AUDIO-TO-BOOK WORKSPACE ("دەنگ بۆ پەرتووک")
+                 ═══════════════════════════════════════════════════════════ */}
+              {activeSection === 'audio' && (
+                <div className="glass-inner-card p-3 sm:p-4 space-y-3">
+                  <div
+                    style={{ paddingBottom: '10.6875px', marginBottom: '10.125px' }}
+                    className="flex items-center justify-between gap-2 border-b border-white/10"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shrink-0">
+                        <Mic className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                      </div>
+                      <div>
+                        <h2 className="font-heading font-bold text-white text-xs sm:text-sm">
+                          دەنگ و ڤیدیۆ بۆ پەرتووک
+                        </h2>
+                        <p className="text-[11px] text-white/60">
+                          گوهرینا وانە، ڤیدیۆ و تۆمارێن دەنگی پەیڤ ب پەیڤ بۆ پەرتووکا بادینی
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Audio Conversion Progress */}
+                  {isConvertingAudio && audioConvertStatus && (
+                    <div className="p-3 rounded-2xl bg-black/35 border border-white/15 space-y-2">
+                      <div className="flex items-center gap-2 text-xs">
+                        <RefreshCw className="w-3.5 h-3.5 text-blue-300 animate-spin shrink-0" />
+                        <span className="font-heading font-bold text-white">
+                          {audioConvertStatus}
+                        </span>
+                      </div>
+                      <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-blue-500 to-sky-400 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.max(3, audioProgressPercent)}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-white/60">
+                        <span>بۆری: {formatDurationKurdish(audioElapsedSec)}</span>
+                        <span>
+                          مابوو:{' '}
+                          <b className="text-blue-300">
+                            {formatDurationKurdish(remainingAudioSec)}
+                          </b>
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {audioConvertError && (
+                    <div className="p-2.5 rounded-xl bg-red-500/20 border border-red-400/30 text-red-200 text-xs">
+                      {audioConvertError}
+                    </div>
+                  )}
+
+                  {/* Mode + File Picker */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-white/60 mb-1.5">
+                        شێوازێ پەرتووکێ
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setAudioTargetMode('new')}
+                          className={`flex-1 px-2.5 py-1.5 text-[11px] font-heading font-bold rounded-full transition-all cursor-pointer ${
+                            audioTargetMode === 'new'
+                              ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-xs'
+                              : 'bg-white/8 text-white/60 border border-white/12 hover:text-white'
+                          }`}
+                        >
+                          پەرتووکا سەربەخۆ
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAudioTargetMode('append')}
+                          className={`flex-1 px-2.5 py-1.5 text-[11px] font-heading font-bold rounded-full transition-all cursor-pointer ${
+                            audioTargetMode === 'append'
+                              ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-xs'
+                              : 'bg-white/8 text-white/60 border border-white/12 hover:text-white'
+                          }`}
+                        >
+                          گرێدانا ب پەرتووکا هەلبژارتی
+                        </button>
+                      </div>
+                    </div>
+
+                    {audioTargetMode === 'append' && (
+                      <div>
+                        <label className="block text-[11px] font-bold text-white/60 mb-1.5">
+                          پەرتووکا ئامانج
+                        </label>
+                        <select
+                          value={targetAppendBookId}
+                          onChange={(e) => setTargetAppendBookId(e.target.value)}
+                          className="w-full px-3 py-2 text-xs bg-black/40 border border-white/15 rounded-xl text-white focus:outline-none focus:border-blue-400 cursor-pointer"
+                        >
+                          {audioBooksList.map((ab) => (
+                            <option
+                              key={ab.id}
+                              value={ab.id}
+                              className="bg-[#18181B] text-white"
+                            >
+                              {ab.title}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* File Picker (Audio & Video supported) */}
+                  <label className="flex flex-col items-center justify-center p-4 sm:p-5 border-2 border-dashed border-white/20 hover:border-blue-400/60 rounded-2xl bg-black/30 hover:bg-black/40 cursor-pointer transition-all group">
+                    <input
+                      type="file"
+                      accept="audio/*,video/*,.mp3,.m4a,.wav,.mp4,.mov,.webm,.mkv"
+                      multiple
+                      onChange={handleSelectAudioFile}
+                      className="hidden"
+                    />
+                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 text-white flex items-center justify-center mb-2 shadow-[0_0_20px_rgba(37,99,235,0.35)]">
+                      <Headphones className="w-4 h-4" />
+                    </div>
+                    <p className="text-xs font-heading font-bold text-white text-center">
+                      فایلێن دەنگی یان ڤیدیۆیی ئێرە بهنێرە (.mp3, .m4a, .wav, .mp4)
+                    </p>
+                  </label>
+
+                  {/* Selected Audio/Video Files Queue with Delete */}
+                  {selectedAudioFiles.length > 0 && (
+                    <div className="space-y-2.5">
+                      {selectedAudioFiles.map((f, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between p-2.5 rounded-2xl bg-black/35 border border-white/12"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Headphones className="w-3.5 h-3.5 text-blue-300 shrink-0" />
+                            <span className="text-xs font-heading font-bold text-white truncate">
+                              {f.name}
+                            </span>
+                            <span className="text-[10px] text-white/60 shrink-0">
+                              (
+                              {toEasternArabicNumerals(
+                                Math.round((f.size / (1024 * 1024)) * 10) / 10
+                              )}{' '}
+                              MB)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSelectedAudioFile(idx)}
+                            className="px-2 py-1 flex items-center gap-1 rounded-full bg-red-500/20 text-red-200 hover:bg-red-500/35 text-[10px] font-heading font-bold cursor-pointer shrink-0"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>ژێبرن</span>
+                          </button>
+                        </div>
+                      ))}
+
+                      {/* Metadata Inputs */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 p-3 rounded-2xl bg-black/35 border border-white/12">
+                        <div>
+                          <label className="block text-[10px] font-bold text-white/60 mb-1">
+                            سەردێڕێ وانێ
+                          </label>
+                          <input
+                            type="text"
+                            value={audioLessonTitleInput}
+                            onChange={(e) => setAudioLessonTitleInput(e.target.value)}
+                            className="w-full px-3 py-1.5 text-xs bg-black/40 border border-white/15 rounded-xl text-white focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-white/60 mb-1">
+                            ناڤێ پەرتووکێ
+                          </label>
+                          <input
+                            type="text"
+                            value={audioBookTitleInput}
+                            onChange={(e) => setAudioBookTitleInput(e.target.value)}
+                            className="w-full px-3 py-1.5 text-xs bg-black/40 border border-white/15 rounded-xl text-white focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-white/60 mb-1">
+                            مامۆستا
+                          </label>
+                          <input
+                            type="text"
+                            value={audioSpeakerInput}
+                            onChange={(e) => setAudioSpeakerInput(e.target.value)}
+                            className="w-full px-3 py-1.5 text-xs bg-black/40 border border-white/15 rounded-xl text-white focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Convert Button */}
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <div className="flex items-center gap-1.5 text-[11px] text-white/60">
+                          <Clock className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            دەمێ پێدڤی: نێزیکی {formatDurationKurdish(estimatedAudioTotalSec)}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleConvertAudioToBook}
+                          disabled={isConvertingAudio}
+                          className="amber-pill text-xs flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                        >
+                          {isConvertingAudio ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
+                              <span>نڤیسین ({formatDurationKurdish(audioElapsedSec)})...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5 text-white" />
+                              <span>بکە پەرتووک</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Existing Audio / Video Books & Lessons List with Direct Delete */}
+                  {audioBooksList.length > 0 && (
+                    <div className="pt-2 border-t border-white/10 space-y-2">
+                      <div className="text-[11px] font-heading font-bold text-white/75">
+                        تۆمارێن دەنگی و ڤیدیۆیی یێن تە ({toEasternArabicNumerals(audioBooksList.length)})
+                      </div>
+                      <div className="space-y-2">
+                        {audioBooksList.map((ab) => (
+                          <div
+                            key={ab.id}
+                            className="p-2.5 rounded-2xl bg-black/30 border border-white/12 space-y-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveBookId(ab.id);
+                                  setCurrentPage(1);
+                                  setActiveSection('reader');
+                                }}
+                                className="text-xs font-heading font-bold text-white hover:text-blue-300 truncate text-right cursor-pointer"
+                              >
+                                {ab.title} ({toEasternArabicNumerals(ab.pages.length)} لاپەر)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteCustomBook(ab.id)}
+                                className="px-2 py-1 rounded-full bg-red-500/20 hover:bg-red-500/35 border border-red-400/30 text-[10px] font-heading font-bold text-red-200 flex items-center gap-1 cursor-pointer shrink-0"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>ژێبرن</span>
+                              </button>
+                            </div>
+                            {ab.audioTracks && ab.audioTracks.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {ab.audioTracks.map((trk) => (
+                                  <div
+                                    key={trk.id}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/8 border border-white/12 text-[10px] text-white/85"
+                                  >
+                                    <span>{trk.title}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteLessonTrack(ab.id, trk.id)}
+                                      title="ژێبرنا وانێ"
+                                      className="text-red-300 hover:text-red-200 p-0.5 cursor-pointer"
+                                    >
+                                      <X className="w-2.5 h-2.5" />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ═══════════════════════════════════════════════════════════
+                  ACTIVE VIEW: AUTONOMOUS SMART ASSISTANT ("شیرەتکارێ زیرەک") & DESIGN
+                 ═══════════════════════════════════════════════════════════ */}
+              {activeSection === 'chat' && (
+                <div className="glass-inner-card p-3 sm:p-4 space-y-3">
+                  <div
+                    style={{ paddingBottom: '10.6875px', marginBottom: '10.125px' }}
+                    className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center shrink-0">
+                        <Sparkles className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                      </span>
+                      <div>
+                        <h2 className="font-heading font-bold text-white text-xs sm:text-sm">
+                          شیرەتکارێ زیرەک
+                        </h2>
+                        <p className="text-[10px] sm:text-[11px] text-white/60">
+                          راستڤەکرنا لاپەران، گەڕیان د ناڤ پەرتووکێ دا، دووبارە وەرگێڕان، و دیزاینا پەرتووکێ
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Sub-Tabs with Sliding Pill */}
+                    <div className="flex flex-wrap items-center gap-1 bg-black/35 p-1 rounded-2xl border border-white/12">
+                      {(
+                        [
+                          {
+                            id: 'bot' as const,
+                            label: 'شیرەتکارێ زیرەک',
+                            icon: <Sparkles className="w-3 h-3" />,
+                          },
+                          {
+                            id: 'colors' as const,
+                            label: 'رەنگ و فۆنت',
+                            icon: <Palette className="w-3 h-3" />,
+                          },
+                          {
+                            id: 'cover' as const,
+                            label: 'بەرگ',
+                            icon: <BookOpen className="w-3 h-3" />,
+                          },
+                          {
+                            id: 'interior' as const,
+                            label: 'ناوەوە',
+                            icon: <FileText className="w-3 h-3" />,
+                          },
+                        ]
+                      ).map((tab) => {
+                        const isSubActive = designSubTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setDesignSubTab(tab.id)}
+                            className={`relative flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-heading font-bold transition-colors cursor-pointer ${
+                              isSubActive ? 'text-white' : 'text-white/60 hover:text-white'
+                            }`}
+                          >
+                            {isSubActive && (
+                              <motion.div
+                                layoutId="chatSubTabPill"
+                                transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                                className="absolute inset-0 rounded-xl bg-gradient-to-r from-blue-500 to-blue-600 shadow-xs"
+                              />
+                            )}
+                            <span className="relative z-10 flex items-center gap-1">
+                              {tab.icon}
+                              {tab.label}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Autonomous Agent Chat Interface — Mobile (Image 1) & Laptop (Image 2) inside Glass */}
+                  {designSubTab === 'bot' && (
+                    <div className="relative rounded-2xl bg-black/20 border border-white/12 p-3.5 sm:p-6 overflow-hidden transition-all">
+                      {/* Hidden File Input for "+" Image Upload */}
+                      <input
+                        ref={chatImageInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setChatImageName(file.name);
+                          setChatImageMimeType(file.type || 'image/jpeg');
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            setChatImageDataUrl(reader.result as string);
+                          };
+                          reader.readAsDataURL(file);
+                          e.target.value = '';
+                        }}
+                      />
+
+                      {/* ─── ACTIVE CONVERSATION MESSAGES (Shown once user sends a message) ─── */}
+                      {chatMessages.length > 0 && (
+                        <div className="space-y-3 mb-4">
+                          <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                            <span className="text-[11px] font-heading font-bold text-blue-200/85 flex items-center gap-1.5">
+                              <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                              <span>وتووێژ دگەل شیرەتکارێ زیرەک</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setChatMessages([])}
+                              className="px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-[10px] font-heading font-bold text-white/80 hover:text-white flex items-center gap-1 cursor-pointer"
+                            >
+                              <Plus className="w-3 h-3" />
+                              <span>چاتێ نوی</span>
+                            </button>
+                          </div>
+
+                          <div
+                            ref={chatScrollRef}
+                            className="max-h-[310px] overflow-y-auto dark-scrollbar space-y-2.5 pr-1"
+                          >
+                            {chatMessages.map((msg) => (
+                              <div
+                                key={msg.id}
+                                className={`flex gap-2.5 ${
+                                  msg.role === 'user' ? 'flex-row-reverse' : ''
+                                }`}
+                              >
+                                <div
+                                  className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
+                                    msg.role === 'user'
+                                      ? 'bg-blue-500/25 text-blue-300 border border-blue-400/30'
+                                      : 'bg-blue-500/20 text-blue-200 border border-blue-400/30'
+                                  }`}
+                                >
+                                  {msg.role === 'user' ? (
+                                    '🧑'
+                                  ) : (
+                                    <Sparkles className="w-3.5 h-3.5 text-blue-300" />
+                                  )}
+                                </div>
+                                <div
+                                  className={`max-w-[85%] px-3.5 py-2.5 rounded-2xl text-xs leading-relaxed ${
+                                    msg.role === 'user'
+                                      ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-tr-sm shadow-xs'
+                                      : 'bg-white/10 text-white border border-white/15 rounded-tl-sm shadow-xs backdrop-blur-xs'
+                                  }`}
+                                >
+                                  {msg.executedToolCalls && msg.executedToolCalls.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5 mb-2">
+                                      {msg.executedToolCalls.map((tc, tIdx) => (
+                                        <span
+                                          key={tIdx}
+                                          className="px-2.5 py-0.5 rounded-full bg-blue-500/25 border border-blue-400/35 text-[10px] font-heading font-bold text-blue-200"
+                                        >
+                                          ⚡ {tc.summaryKurdish}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <p className="font-subtext whitespace-pre-wrap">{msg.text}</p>
+                                  {msg.imageDataUrl && (
+                                    <img
+                                      src={msg.imageDataUrl}
+                                      alt={msg.imageName || 'وێنە'}
+                                      className="mt-2 max-w-full max-h-40 rounded-xl border border-white/20"
+                                    />
+                                  )}
+                                  {msg.role === 'assistant' &&
+                                    !msg.reverted &&
+                                    ((msg.didModifyPage && msg.previousPageSnapshot) ||
+                                      (msg.didUpdateDesign &&
+                                        (msg.previousDesignSnapshot ||
+                                          msg.previousPagesSnapshot))) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUndoChatAction(msg)}
+                                        className="mt-2 px-3 py-1 rounded-full bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/40 text-[10px] font-heading font-bold text-amber-200 hover:text-white cursor-pointer flex items-center gap-1.5 transition-colors"
+                                      >
+                                        <RotateCcw className="w-3 h-3" />
+                                        <span>زڤڕاندن (Undo)</span>
+                                      </button>
+                                    )}
+                                  {msg.reverted && (
+                                    <span className="mt-1.5 inline-block text-[10px] text-emerald-300 font-heading font-bold">
+                                      ✓ هاتە زڤڕاندن (Reverted)
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+
+                            {isChatLoading && (
+                              <div className="flex items-center gap-2 text-xs text-blue-200 bg-blue-500/15 border border-blue-400/30 px-3.5 py-2 rounded-2xl w-fit">
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-300" />
+                                <span className="font-heading font-bold">
+                                  🧠 یێ هزر دکەت و کار دکەت...
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ═══════════════════════════════════════════════════════════════════════
+                          1. MOBILE LAYOUT (Image 1 — md:hidden)
+                         ═══════════════════════════════════════════════════════════════════════ */}
+                      <div className="flex md:hidden flex-col justify-between min-h-[340px] gap-4">
+                        {chatMessages.length === 0 ? (
+                          <>
+                            {/* Top Centered Greeting (Logo Removed) */}
+                            <div className="flex flex-col items-center text-center pt-5 space-y-2">
+                              <h3 className="text-lg font-heading font-bold text-white leading-snug">
+                                سلاڤ برا، چ کارەکی
+                                <br />
+                                بۆ تە بکەم؟
+                              </h3>
+                            </div>
+
+                            {/* Minimal 3 Borderless Action Rows with Icons (Image 1 Style) */}
+                            <div className="space-y-3 px-1 pt-2">
+                              {[
+                                {
+                                  icon: <CornerDownLeft className="w-4 h-4 text-white/75 shrink-0" />,
+                                  label: `دەقێ بادینی یێ لاپەرێ ${toEasternArabicNumerals(currentPage)} باشتر و رەوانتر بکە`,
+                                },
+                                {
+                                  icon: <TrendingUp className="w-4 h-4 text-white/75 shrink-0" />,
+                                  label: 'پوختەیەکێ ژ بابەتێن ڤێ پەرتووکێ بۆ من بنڤیسە',
+                                },
+                                {
+                                  icon: <MessageSquare className="w-4 h-4 text-white/75 shrink-0" />,
+                                  label: `لاپەرێ ${toEasternArabicNumerals(currentPage)} دووبارە وەرگێڕە ب شێوازەکێ زانستی`,
+                                },
+                              ].map((item, idx) => (
+                                <button
+                                  key={idx}
+                                  type="button"
+                                  onClick={() => void handleSendChatMessage(undefined, item.label)}
+                                  className="w-full flex items-center gap-3 text-right py-1.5 text-xs text-white/90 hover:text-blue-300 transition-colors cursor-pointer"
+                                >
+                                  {item.icon}
+                                  <span className="font-subtext leading-relaxed">{item.label}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <div />
+                        )}
+
+                        {/* Mobile Bottom Section: Chat / Task Pill Toggle + Rounded Pill Input Bar */}
+                        <div className="space-y-2.5 pt-1">
+                          {/* Centered Chat | Task Segmented Pill (Above Input on Mobile like Image 1) */}
+                          <div className="flex justify-center">
+                            <div className="inline-flex items-center rounded-full bg-white/[0.08] border border-white/15 p-0.5 backdrop-blur-md">
+                              <button
+                                type="button"
+                                onClick={() => setAiChatMode('chat')}
+                                className={`px-3.5 py-1 rounded-full text-[11px] font-heading font-bold transition-all cursor-pointer ${
+                                  aiChatMode === 'chat'
+                                    ? 'bg-black/65 text-white shadow-xs border border-white/15'
+                                    : 'text-white/65 hover:text-white'
+                                }`}
+                              >
+                                چات
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setAiChatMode('task')}
+                                className={`px-3.5 py-1 rounded-full text-[11px] font-heading font-bold transition-all cursor-pointer ${
+                                  aiChatMode === 'task'
+                                    ? 'bg-black/65 text-white shadow-xs border border-white/15'
+                                    : 'text-white/65 hover:text-white'
+                                }`}
+                              >
+                                ئەرک
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Attached Image Preview */}
+                          {chatImageDataUrl && (
+                            <div className="flex items-center gap-2 p-1.5 rounded-xl bg-black/50 border border-white/20 w-fit">
+                              <img
+                                src={chatImageDataUrl}
+                                alt=""
+                                className="w-7 h-7 rounded-lg object-cover"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setChatImageDataUrl(null);
+                                  setChatImageName('');
+                                }}
+                                className="text-white/60 hover:text-red-400 cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Mobile Pill Input Bar (Image 1) */}
+                          <div className="flex items-center gap-2 rounded-full bg-black/45 border border-white/15 px-3 py-1.5 shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+                            <button
+                              type="button"
+                              onClick={() => chatImageInputRef.current?.click()}
+                              title="زێدەکرنا وێنە"
+                              className="w-8 h-8 rounded-full flex items-center justify-center text-white/75 hover:text-white hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+                            >
+                              <Plus className="w-4 h-4" />
+                            </button>
+
+                            <input
+                              type="text"
+                              value={chatInput}
+                              onChange={(e) => setChatInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  void handleSendChatMessage();
+                                }
+                              }}
+                              placeholder={
+                                aiChatMode === 'task'
+                                  ? 'ئەرکەکێ بدە شیرەتکارێ زیرەک...'
+                                  : 'پرسیارەکێ ژ شیرەتکارێ زیرەک بکە...'
+                              }
+                              className="flex-1 min-w-0 bg-transparent text-xs text-white placeholder:text-white/45 focus:outline-none font-subtext"
+                            />
+
+                            <button
+                              type="button"
+                              onClick={handleToggleVoiceDictation}
+                              title="ئاخفتن ب دەنگی"
+                              className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+                                isVoiceListening
+                                  ? 'bg-red-500/30 text-red-300 animate-pulse'
+                                  : 'text-white/75 hover:text-white hover:bg-white/10'
+                              }`}
+                            >
+                              <Mic className="w-4 h-4" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (chatInput.trim() || chatImageDataUrl) {
+                                  void handleSendChatMessage();
+                                } else {
+                                  handleToggleVoiceDictation();
+                                }
+                              }}
+                              disabled={isChatLoading}
+                              className="w-8 h-8 rounded-full bg-blue-600/35 hover:bg-blue-600/55 border border-blue-400/35 text-blue-100 flex items-center justify-center transition-all cursor-pointer shrink-0 disabled:opacity-40"
+                            >
+                              {chatInput.trim() || chatImageDataUrl ? (
+                                <Send className="w-3.5 h-3.5" />
+                              ) : (
+                                <AudioLines className="w-4 h-4" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* ═══════════════════════════════════════════════════════════════════════
+                          2. LAPTOP / DESKTOP LAYOUT (Image 2 — hidden md:flex)
+                         ═══════════════════════════════════════════════════════════════════════ */}
+                      <div
+                        className={`hidden md:flex flex-col items-center justify-center ${
+                          chatMessages.length === 0 ? 'min-h-[380px] py-10' : 'pt-2 pb-1'
+                        } px-4`}
+                      >
+                        {/* Centered Headline ("من أين نبدأ؟" -> "ژ کیرێ دەستپێبکەین؟") */}
+                        {chatMessages.length === 0 && (
+                          <h3 className="text-2xl lg:text-3xl font-heading font-bold text-white mb-7 text-center tracking-normal">
+                            ژ کیرێ دەستپێبکەین؟
+                          </h3>
+                        )}
+
+                        {/* Attached Image Preview on Laptop */}
+                        {chatImageDataUrl && (
+                          <div className="flex items-center gap-2 p-1.5 mb-2.5 rounded-xl bg-black/55 border border-white/20">
+                            <img
+                              src={chatImageDataUrl}
+                              alt=""
+                              className="w-8 h-8 rounded-lg object-cover"
+                            />
+                            <span className="text-[11px] text-white/75 max-w-[160px] truncate">
+                              {chatImageName}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setChatImageDataUrl(null);
+                                setChatImageName('');
+                              }}
+                              className="text-white/60 hover:text-red-400 cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Wide Rounded Pill Input Bar (Image 2 Style) */}
+                        <div
+                          dir="ltr"
+                          className="w-full max-w-[660px] rounded-full bg-black/45 backdrop-blur-md border border-white/15 px-4 py-3 flex items-center gap-3 shadow-[0_18px_45px_rgba(0,0,0,0.45)]"
+                        >
+                          {/* Left Side ("+" Attach Button & Send Button if typing) */}
+                          <button
+                            type="button"
+                            onClick={() => chatImageInputRef.current?.click()}
+                            title="هنارتنا وێنە"
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-white/75 hover:text-white hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+
+                          {(chatInput.trim() || chatImageDataUrl) && (
+                            <button
+                              type="button"
+                              onClick={() => void handleSendChatMessage()}
+                              disabled={isChatLoading}
+                              className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-500 to-blue-600 text-white flex items-center justify-center shadow-xs hover:brightness-110 transition-all cursor-pointer shrink-0"
+                              title="هنارتن"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {/* RTL Input Field */}
+                          <input
+                            dir="rtl"
+                            type="text"
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                void handleSendChatMessage();
+                              }
+                            }}
+                            placeholder={
+                              aiChatMode === 'task'
+                                ? 'ئەرکەکێ بدە شیرەتکارێ زیرەک...'
+                                : 'پرسیارەکێ ژ شیرەتکارێ زیرەک بکە'
+                            }
+                            className="flex-1 min-w-0 bg-transparent text-right text-xs sm:text-sm text-white placeholder:text-white/50 focus:outline-none font-subtext"
+                          />
+
+                          {/* Right Side: Mode Selector Badge + Microphone Icon (Image 2) */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAiStyleLabel((prev) => (prev === 'زیرەک' ? 'قووڵ' : 'زیرەک'))
+                            }
+                            title="شێوازێ هزرکرنێ"
+                            className="px-2.5 py-1 rounded-full text-[11px] font-heading font-bold text-white/75 hover:text-white hover:bg-white/10 flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+                          >
+                            <ChevronDown className="w-3 h-3 text-white/60" />
+                            <span>{aiStyleLabel}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleToggleVoiceDictation}
+                            title="ئاخفتن ب دەنگی"
+                            className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+                              isVoiceListening
+                                ? 'bg-red-500/30 text-red-300 animate-pulse'
+                                : 'text-white/75 hover:text-white hover:bg-white/10'
+                            }`}
+                          >
+                            <Mic className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {/* Underneath Pill Bar: "چات" (دردشة) & "ئەرک" (مهمة) Toggle (Image 2) */}
+                        <div className="flex items-center justify-center gap-2 mt-4">
+                          <button
+                            type="button"
+                            onClick={() => setAiChatMode('chat')}
+                            className={`px-4 py-1.5 rounded-full text-xs font-heading font-bold transition-all cursor-pointer ${
+                              aiChatMode === 'chat'
+                                ? 'bg-white/[0.11] text-white border border-white/20 shadow-xs'
+                                : 'text-white/65 hover:text-white'
+                            }`}
+                          >
+                            چات
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAiChatMode('task')}
+                            className={`px-4 py-1.5 rounded-full text-xs font-heading font-bold transition-all cursor-pointer ${
+                              aiChatMode === 'task'
+                                ? 'bg-white/[0.11] text-white border border-white/20 shadow-xs'
+                                : 'text-white/65 hover:text-white'
+                            }`}
+                          >
+                            ئەرک
+                          </button>
+                        </div>
+                      </div>
+
+                      {editorStatusBanner && (
+                        <div className="flex items-center justify-between p-2.5 mt-3 rounded-2xl bg-emerald-500/20 border border-emerald-400/30">
+                          <span className="text-[11px] font-heading font-bold text-emerald-400">
+                            {editorStatusBanner}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setEditorStatusBanner(null)}
+                            className="text-white/60 hover:text-white cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Design Presets */}
+                  {designSubTab === 'colors' && (
+                    <div className="space-y-3 p-4 rounded-2xl bg-black/35 border border-white/12">
+                      <p className="text-xs text-white/60 mb-3">
+                        هەلبژارتنا شێوازێ رەنگان بۆ فۆنتێن پەرتووکێ (١ رەنگ، ٢ رەنگ، یان ٣ رەنگ)
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {BOOK_DESIGN_PRESETS.map((preset) => {
+                          const isActive = activeBookDesign.presetId === preset.id;
+                          const colors = resolveEffectiveColors(preset);
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={() => updateActiveBookDesign(preset)}
+                              className={`p-3.5 rounded-2xl border transition-all cursor-pointer text-right ${
+                                isActive
+                                  ? 'bg-gradient-to-r from-blue-500/30 to-blue-600/30 text-white border-blue-400/50 shadow-xs'
+                                  : 'bg-white/8 border-white/12 hover:bg-white/15 text-white'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 mb-2">
+                                {[colors.heading, colors.verse, colors.body]
+                                  .filter(Boolean)
+                                  .map((c, i) => (
+                                    <span
+                                      key={i}
+                                      className="w-4 h-4 rounded-full border border-white/30"
+                                      style={{ background: c }}
+                                    />
+                                  ))}
+                              </div>
+                              <span className="text-[11px] font-heading font-bold text-white">
+                                {preset.nameKurdish || preset.presetId}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {designSubTab === 'cover' && (
+                    <div className="p-5 rounded-2xl bg-black/35 border border-white/12">
+                      <p className="text-xs text-white/60 mb-3">
+                        بۆ دەستکاریکرنا بەرگی، ل بەشێ چاتبۆت بنڤیسە «بەرگی بکە...» یان وێنەیەکی بهنێرە.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDesignSubTab('bot');
+                          setChatInput('بەرگێ پەرتووکێ بهنێرە');
+                        }}
+                        className="amber-pill text-xs flex items-center gap-2 cursor-pointer"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-white" />
+                        بڕۆ بۆ چاتبۆت
+                      </button>
+                    </div>
+                  )}
+
+                  {designSubTab === 'interior' && (
+                    <div className="p-5 rounded-2xl bg-black/35 border border-white/12">
+                      <p className="text-xs text-white/60 mb-3">
+                        بۆ گوهۆڕینا سەردێڕ، چوارچێوە، و شێوازێ ناوەوەیێ لاپەران، ل بەشێ چاتبۆت بنڤیسە.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDesignSubTab('bot');
+                          setChatInput('شێوازێ سەردێڕی بگوهۆڕە');
+                        }}
+                        className="amber-pill text-xs flex items-center gap-2 cursor-pointer"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-white" />
+                        بڕۆ بۆ چاتبۆت
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ═══════════════════════════════════════════════════════════
+                  ACTIVE VIEW: EXPORT / FONT / PDF & WORD
+                 ═══════════════════════════════════════════════════════════ */}
+              {activeSection === 'export' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Export Card */}
+                  <div className="glass-inner-card p-4 space-y-4">
+                    <div
+                      style={{ paddingBottom: '10.6875px', marginBottom: '10.125px' }}
+                      className="flex items-center gap-2.5 border-b border-white/10"
+                    >
+                      <span className="w-9 h-9 rounded-2xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center">
+                        <Download className="w-4 h-4" />
+                      </span>
+                      <h2 className="font-heading font-bold text-white text-sm">
+                        داگرتن و سەیڤکرن
+                      </h2>
+                    </div>
+
+                    {/* Full Book Export */}
+                    <div className="space-y-3">
+                      <h3 className="text-xs font-heading font-bold text-white/60">
+                        هەمان پەرتووکا ئامادە
+                      </h3>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={handleDownloadFullPdf}
+                          disabled={isGeneratingPdf}
+                          className="amber-pill text-xs flex items-center gap-2 disabled:opacity-50 cursor-pointer"
+                        >
+                          <Download className="w-4 h-4 text-white" />
+                          PDF ({toEasternArabicNumerals(maxPageCount)} لاپەر)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDownloadFullWord}
+                          disabled={isGeneratingWord}
+                          className="px-4 py-2 rounded-full text-xs font-heading font-bold bg-white/10 text-white border border-white/15 hover:bg-white/20 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          <FileText className="w-4 h-4 text-blue-300" />
+                          Word (.doc)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDownloadCurrentPageWord}
+                          className="px-4 py-2 rounded-full text-xs font-heading font-bold bg-white/10 text-white border border-white/15 hover:bg-white/20 flex items-center gap-2 cursor-pointer"
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                          لاپەرا ئێکێ (Word)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handlePrintVectorPdf}
+                          className="px-4 py-2 rounded-full text-xs font-heading font-bold bg-white/10 text-white border border-white/15 hover:bg-white/20 flex items-center gap-2 cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-blue-300" />
+                          چاپکرن
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Range Export */}
+                    <div className="space-y-3 pt-3 border-t border-white/10">
+                      <h3 className="text-xs font-heading font-bold text-white/60">
+                        ژمارەیا لاپەران بۆ داگرتن
+                      </h3>
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-[11px] text-white/60">ژ</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={maxPageCount}
+                            value={pdfRangeStart}
+                            onChange={(e) =>
+                              setPdfRangeStart(Math.max(1, Number(e.target.value)))
+                            }
+                            className="w-14 px-2 py-1.5 text-xs bg-black/40 border border-white/15 rounded-full text-white text-center focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-[11px] text-white/60">هەتا</label>
+                          <input
+                            type="number"
+                            min={pdfRangeStart}
+                            max={maxPageCount}
+                            value={pdfRangeEnd}
+                            onChange={(e) =>
+                              setPdfRangeEnd(
+                                Math.max(pdfRangeStart, Number(e.target.value))
+                              )
+                            }
+                            className="w-14 px-2 py-1.5 text-xs bg-black/40 border border-white/15 rounded-full text-white text-center focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleDownloadRangePdf}
+                          disabled={isGeneratingPdf}
+                          className="px-3.5 py-1.5 rounded-full text-[11px] font-heading font-bold bg-gradient-to-r from-blue-500 to-blue-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
+                        >
+                          PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDownloadRangeWord}
+                          disabled={isGeneratingWord}
+                          className="px-3.5 py-1.5 rounded-full text-[11px] font-heading font-bold bg-white/10 text-white border border-white/15 hover:bg-white/20 cursor-pointer disabled:opacity-50"
+                        >
+                          Word
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Quality with Sliding Pill */}
+                    <div className="space-y-3 pt-3 border-t border-white/10">
+                      <h3 className="text-xs font-heading font-bold text-white/60">
+                        کوالیتیا رووناکبیرێ
+                      </h3>
+                      <div className="inline-flex items-center gap-1 bg-black/35 p-1 rounded-full border border-white/12">
+                        {[1.5, 2, 2.5, 3].map((scale) => {
+                          const isScaleActive = pdfScale === scale;
+                          return (
+                            <button
+                              key={scale}
+                              type="button"
+                              onClick={() => setPdfScale(scale)}
+                              className={`relative px-3.5 py-1.5 rounded-full text-[11px] font-heading font-bold transition-colors cursor-pointer ${
+                                isScaleActive ? 'text-white' : 'text-white/60 hover:text-white'
+                              }`}
+                            >
+                              {isScaleActive && (
+                                <motion.div
+                                  layoutId="pdfQualityPill"
+                                  transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                                  className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-500 to-blue-600 shadow-xs"
+                                />
+                              )}
+                              <span className="relative z-10">{scale}x</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Font & Ready Files Card */}
+                  <div className="glass-inner-card p-4 space-y-4">
+                    <div
+                      style={{ paddingBottom: '10.6875px', marginBottom: '10.125px' }}
+                      className="flex items-center gap-2.5 border-b border-white/15"
+                    >
+                      <span className="w-9 h-9 rounded-2xl bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center">
+                        <Type className="w-4 h-4" />
+                      </span>
+                      <h2 className="font-heading font-bold text-white text-sm">
+                        فۆنتێ پەرتووکێ
+                      </h2>
+                    </div>
+
+                    {/* Font Selector */}
+                    <div className="space-y-2">
+                      {BOOK_FONT_OPTIONS.map((fontOpt) => {
+                        const isFontActive = bookFontId === fontOpt.id;
+                        return (
+                          <button
+                            key={fontOpt.id}
+                            type="button"
+                            onClick={() => handleSelectBookFont(fontOpt.id)}
+                            className={`w-full text-right p-3 rounded-2xl border transition-all cursor-pointer ${
+                              isFontActive
+                                ? 'bg-blue-500/20 text-white border-blue-400/50 shadow-md'
+                                : 'bg-black/30 border-white/12 hover:bg-black/45 text-white'
+                            }`}
+                          >
+                            <div className="text-xs font-heading font-bold text-white">
+                              {fontOpt.label}
+                            </div>
+                            <div
+                              className="text-[11px] mt-1 text-white/60"
+                              style={{ fontFamily: fontOpt.cssFamily }}
+                            >
+                              {fontOpt.sampleText}
+                            </div>
+                          </button>
                         );
                       })}
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAudioTargetMode('new');
-                          setAudioLessonTitleInput(
-                            getKurdishLessonTitle((activeBook.audioTracks?.length || 1) + 1)
-                          );
-                          setActiveSection('audio');
-                        }}
-                        className="px-3 py-1 text-[11px] font-heading font-bold text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] rounded-lg flex items-center gap-1 cursor-pointer shrink-0"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>دەنگێ نوی (پەرتووکا سەربەخۆ)</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAudioTargetMode('append');
-                          setTargetAppendBookId(activeBook.id);
-                          setAudioLessonTitleInput(
-                            getKurdishLessonTitle((activeBook.audioTracks?.length || 1) + 1)
-                          );
-                          setActiveSection('audio');
-                        }}
-                        className="px-3 py-1 text-[11px] font-heading font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 cursor-pointer shrink-0"
-                      >
-                        <Link2 className="w-3.5 h-3.5 text-[#2563EB]" />
-                        <span>گرێدانا دەنگێ دووێ ب ڤێ ڤە</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Book Page Reading Canvas */}
-          {currentPageData && viewMode === 'single' && (
-            <div className="w-full flex flex-col items-center gap-4">
-              <div className="group relative w-full flex justify-center">
-                <BookPageSheet
-                  page={currentPageData}
-                  fontSizePt={fontSizePt}
-                  zoom={zoom}
-                  headerTitle={activeBook.headerTitle}
-                  bookFontFamily={activeBookFont.cssFamily}
-                  design={activeBookDesign}
-                  onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
-                />
-              </div>
-
-              {/* Clean White Studio Bottom Page Turner Bar */}
-              <div className="w-full max-w-[595px] bg-white border border-slate-100 rounded-2xl p-3 flex items-center justify-between shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
-                <button
-                  type="button"
-                  disabled={currentPage <= 1}
-                  onClick={() => {
-                    setCurrentPage((p) => Math.max(1, p - 1));
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }}
-                  className="min-h-[40px] px-4 py-2 text-xs font-heading font-bold text-slate-800 bg-slate-100 hover:bg-slate-200/80 disabled:opacity-40 rounded-xl flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                  <span>لاپەرێ بەرێ</span>
-                </button>
-
-                <div className="flex flex-col items-center">
-                  <span className="text-xs font-heading font-extrabold text-slate-900 tabular-nums">
-                    لاپەر {toEasternArabicNumerals(currentPage)} ژ{' '}
-                    {toEasternArabicNumerals(maxPageCount)}
-                  </span>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={currentPage >= maxPageCount}
-                  onClick={() => {
-                    setCurrentPage((p) => Math.min(maxPageCount, p + 1));
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }}
-                  className="min-h-[40px] px-4 py-2 text-xs font-heading font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-40 rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all"
-                >
-                  <span>لاپەرێ پاشتر</span>
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {currentPageData && viewMode === 'spread' && (
-            <div className="w-full overflow-x-auto pb-6">
-              <div className="flex flex-col xl:flex-row items-center justify-center gap-5">
-                <div className="group relative">
-                  <BookPageSheet
-                    page={spreadPages.rightPage}
-                    fontSizePt={fontSizePt}
-                    zoom={Math.min(zoom, 0.8)}
-                    headerTitle={activeBook.headerTitle}
-                    bookFontFamily={activeBookFont.cssFamily}
-                    design={activeBookDesign}
-                    onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
-                  />
-                </div>
-                {spreadPages.leftPage && (
-                  <div className="group relative">
-                    <BookPageSheet
-                      page={spreadPages.leftPage}
-                      fontSizePt={fontSizePt}
-                      zoom={Math.min(zoom, 0.8)}
-                      headerTitle={activeBook.headerTitle}
-                      bookFontFamily={activeBookFont.cssFamily}
-                      design={activeBookDesign}
-                      onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {currentPageData && viewMode === 'compare' && (
-            <div className="w-full grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
-              <div className="flex flex-col items-center space-y-2">
-                <div className="text-xs font-semibold text-stone-600">
-                  لاپەرێ وەرگێرای ب شێوەزارێ بادینی (لاپەر{' '}
-                  {toEasternArabicNumerals(currentPage)})
-                </div>
-                <div className="w-full overflow-x-auto flex justify-center">
-                  <BookPageSheet
-                    page={currentPageData}
-                    fontSizePt={fontSizePt}
-                    zoom={0.78}
-                    headerTitle={activeBook.headerTitle}
-                    bookFontFamily={activeBookFont.cssFamily}
-                    design={activeBookDesign}
-                    onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
-                  />
-                </div>
-              </div>
-
-              {activeBook.originalPdfUrl && (
-                <div className="flex flex-col items-center space-y-2 w-full">
-                  <div className="text-xs font-semibold text-stone-600">
-                    لاپەرێ رەسەن یێ پەرتووکا عەرەبی (لاپەر{' '}
-                    {toEasternArabicNumerals(currentPage)})
-                  </div>
-                  <div
-                    style={{
-                      width: `${Math.round(595 * 0.78)}px`,
-                      height: `${Math.round(842 * 0.78)}px`,
-                    }}
-                    className="bg-white border border-stone-200 shadow-md overflow-hidden mx-auto max-w-full"
-                  >
-                    <iframe
-                      key={currentPage}
-                      src={`${activeBook.originalPdfUrl}#page=${currentPage}&view=FitPage&toolbar=0&navpanes=0`}
-                      title={`Original Arabic PDF Page ${currentPage}`}
-                      className="w-full h-full border-0"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </main>
-      )}
-
-      {/* =====================================================================
-          SECTION 2: AUDIO TO BOOK ("دەنگ بۆ پەرتووک") — Matching White Card Design with .MP3 Logo & Supported Formats
-         ===================================================================== */}
-      {activeSection === 'audio' && (
-        <main className="no-print flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 pt-2.5 pb-6 sm:py-10 space-y-6 sm:space-y-8">
-          {/* Top Sub-Header Row Matching Book / پەرتووک Card: Mode Pills on one side & Library Pill on the other */}
-          <div className="max-w-4xl mx-auto space-y-4">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('upload')}
-                  className="px-4 py-2 rounded-xl bg-white/80 hover:bg-white text-slate-600 hover:text-slate-900 font-semibold text-xs border border-slate-200/70 transition-colors cursor-pointer"
-                >
-                  Book / پەرتووک
-                </button>
-                <span className="px-5 py-2 rounded-xl bg-[#DCE7FF] text-[#1E3A8A] font-extrabold text-sm tracking-tight shadow-2xs flex items-center gap-1.5">
-                  <Headphones className="w-4 h-4 text-[#2563EB]" />
-                  <span>دەنگ بۆ پەرتووک</span>
-                </span>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  document
-                    .getElementById('audio-books-library-section')
-                    ?.scrollIntoView({ behavior: 'smooth' });
-                }}
-                className="px-4 py-2 rounded-full bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/80 shadow-2xs text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <Clock className="w-3.5 h-3.5 text-[#2563EB]" />
-                <span>پەرتووکخانە ({toEasternArabicNumerals(audioBooksList.length)})</span>
-              </button>
-            </div>
-
-            {/* Main White Audio-to-Book Upload & Studio Card — Exact Visual Match to Book Card */}
-            <div className="bg-white rounded-2xl shadow-[0_12px_40px_rgba(15,23,42,0.04)] border border-slate-100 p-6 sm:p-10 space-y-6">
-              {audioConvertError && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800">
-                  {audioConvertError}
-                </div>
-              )}
-
-              {isConvertingAudio && audioConvertStatus && (
-                <div className="p-4 sm:p-5 bg-[#F8FAFF] border border-[#DCE7FF] rounded-2xl text-xs space-y-3 shadow-2xs">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-xl bg-[#EFF6FF] text-[#2563EB] flex items-center justify-center shrink-0">
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                      </div>
-                      <span className="font-heading font-extrabold text-slate-900 text-xs sm:text-sm">
-                        {audioConvertStatus}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <span className="px-2.5 py-1 rounded-full bg-[#2563EB] text-white text-[11px] font-heading font-extrabold tabular-nums">
-                        {toEasternArabicNumerals(Math.min(100, Math.max(1, audioProgressPercent)))}٪
-                      </span>
-                      <div className="px-3 py-1 rounded-full bg-white text-[#1E40AF] border border-[#DCE7FF] flex items-center gap-1.5 text-[11px] font-heading font-bold">
-                        <Clock className="w-3.5 h-3.5 text-[#2563EB] shrink-0" />
-                        <span>
-                          دەمێ بۆری: {formatDurationKurdish(audioElapsedSec)} · دەمێ مای:{' '}
-                          {formatDurationKurdish(remainingAudioSec)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="w-full h-2.5 bg-slate-200/80 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#2563EB] rounded-full transition-all duration-300"
-                      style={{
-                        width: `${Math.min(100, Math.max(2, audioProgressPercent))}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Dashed Upload Dropzone with .MP3 Logo & Audio/Video Format Cards (.MP3, .MP4, .WAV, .M4A, .OGG) */}
-              <label className="block border border-dashed border-slate-300 hover:border-[#2563EB] rounded-xl py-10 sm:py-13 px-4 sm:px-6 text-center bg-[#FCFDFE] hover:bg-[#F8FAFF] transition-all cursor-pointer group">
-                <input
-                  type="file"
-                  multiple
-                  accept="audio/*,video/*,.mp3,.mp4,.wav,.m4a,.ogg,.aac,.flac,.webm"
-                  onChange={handleSelectAudioFile}
-                  className="hidden"
-                />
-
-                {/* 5 Colorful Audio/Video Format Icons Row with well-fitted badges */}
-                <div
-                  dir="ltr"
-                  className="flex flex-wrap items-center justify-center gap-2.5 sm:gap-4 mb-6 select-none"
-                >
-                  {[
-                    { ext: '.MP3', badgeBg: '#2563EB', tintBg: '#EFF6FF', lineClr: '#60A5FA', isPrimary: true },
-                    { ext: '.MP4', badgeBg: '#EF4444', tintBg: '#FEF2F2', lineClr: '#FCA5A5', isPrimary: false },
-                    { ext: '.WAV', badgeBg: '#F59E0B', tintBg: '#FFFBEB', lineClr: '#FCD34D', isPrimary: false },
-                    { ext: '.M4A', badgeBg: '#10B981', tintBg: '#ECFDF5', lineClr: '#6EE7B7', isPrimary: false },
-                    { ext: '.OGG', badgeBg: '#8B5CF6', tintBg: '#F5F3FF', lineClr: '#C4B5FD', isPrimary: false },
-                  ].map((item) => (
-                    <div
-                      key={item.ext}
-                      className={`relative w-14 h-17 sm:w-16 sm:h-19 rounded-xl border shadow-2xs flex flex-col justify-between p-1.5 sm:p-2 transition-transform group-hover:-translate-y-0.5 ${
-                        item.isPrimary
-                          ? 'border-[#2563EB]/50 ring-2 ring-[#2563EB]/20 scale-105'
-                          : 'border-slate-200/80'
-                      }`}
-                      style={{ backgroundColor: item.tintBg }}
-                    >
-                      <div className="flex items-center justify-center pt-1.5">
-                        <Headphones
-                          className="w-4 h-4 sm:w-5 sm:h-5"
-                          style={{ color: item.badgeBg }}
-                        />
-                      </div>
-                      <span
-                        dir="ltr"
-                        className="block w-full py-0.5 px-1 rounded-md text-[9px] sm:text-[10px] font-mono font-extrabold text-white text-center leading-tight shadow-2xs"
-                        style={{ backgroundColor: item.badgeBg }}
-                      >
-                        {item.ext}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Primary Heading Line (Font 2: Noto Kufi Arabic) */}
-                <h2 className="font-heading text-sm sm:text-base font-extrabold text-slate-900 max-w-xl mx-auto leading-relaxed mb-2">
-                  فایلا خو یا دەنگی یان ڤیدیۆیێ بکە دڤێرەدا ژبو دروستکرنا پەرتووکێ (WORD یان PDF)
-                </h2>
-
-                {/* Secondary Subtext Line Underneath (Clean Secondary Font) */}
-                <p className="font-subtext text-xs sm:text-sm text-slate-600 mb-3">
-                  فایلا دەنگی بکێشە ڤێرە یان{' '}
-                  <span className="text-[#2563EB] font-heading font-bold group-hover:underline">
-                    {selectedAudioFiles.length > 0
-                      ? 'زێدەکرنا فایلەکا دی یا دەنگی'
-                      : 'فایلا خۆ یا دەنگی هەلبژێرە بۆ بارکرنێ'}
-                  </span>
-                </p>
-
-                {/* Separated LTR Formats Badge + Clean RTL Kurdish Subtext (No BiDi Scrambling) */}
-                <div className="space-y-1 max-w-lg mx-auto">
-                  <div
-                    dir="ltr"
-                    className="text-[11px] font-mono font-semibold text-slate-400 tracking-wide"
-                  >
-                    MP3, MP4, WAV, M4A, AAC, OGG, FLAC, WEBM
-                  </div>
-                  <p className="font-subtext text-[11px] sm:text-xs text-slate-500">
-                    گوهاستنا دەنگ و ڤیدیۆیێ بۆ پەرتووکێ ب شێوەیێ WORD و PDF
-                  </p>
-                </div>
-              </label>
-
-              {/* Selected Audio Files Queue */}
-              {selectedAudioFiles.length > 0 && (
-                <div className="p-4 sm:p-5 bg-[#F8FAFF] border border-[#DCE7FF] rounded-2xl space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-extrabold text-slate-800">
-                      فایلێن دەنگی یێن ئامادە بۆ نڤیسینێ (
-                      {toEasternArabicNumerals(selectedAudioFiles.length)}):
-                    </span>
-                    <span className="px-2.5 py-1 rounded-lg bg-white text-[#1E40AF] border border-[#DCE7FF] font-bold flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 shrink-0" />
-                      <span>
-                        دەمێ تەخمینی یێ پێدڤی: نێزیکی {formatDurationKurdish(estimatedAudioTotalSec)}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    {selectedAudioFiles.map((file, idx) => (
-                      <div
-                        key={`${file.name}-${idx}`}
-                        className="px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between gap-2 text-xs"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="px-2 py-0.5 bg-[#2563EB] text-white rounded-md text-[11px] font-bold shrink-0">
-                            دەنگێ {toEasternArabicNumerals(idx + 1)}
-                          </span>
-                          <span className="font-semibold text-slate-900 truncate">{file.name}</span>
-                          <span className="text-[11px] text-slate-400 shrink-0">
-                            ({toEasternArabicNumerals((file.size / (1024 * 1024)).toFixed(1))} MB)
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveSelectedAudioFile(idx)}
-                          className="text-slate-400 hover:text-red-600 p-1 cursor-pointer shrink-0"
-                          title="ژێبرن"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Mode Selector: 1. Standalone New Book (Default) vs 2. Append to Existing Book */}
-              <div className="space-y-3 pt-2 border-t border-slate-100">
-                <label className="block text-xs font-extrabold text-slate-800">
-                  شێوازێ چێکرنا پەرتووکێ هەلبژێرە:
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAudioTargetMode('new');
-                    }}
-                    className={`p-4 rounded-xl border text-right transition-all cursor-pointer flex flex-col gap-1 ${
-                      audioTargetMode === 'new'
-                        ? 'bg-[#EFF6FF] border-[#2563EB] ring-1 ring-[#2563EB]'
-                        : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100/70'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                        <Plus className="w-4 h-4 text-[#2563EB]" />
-                        <span>١. پەرتووکەکا نوی و سەربەخۆ چێکە (جودا ژ دەنگێن دی)</span>
-                      </span>
-                      {audioTargetMode === 'new' && (
-                        <Check className="w-4 h-4 text-[#2563EB] shrink-0" />
-                      )}
-                    </div>
-                    <p className="text-[11px] text-slate-600 leading-relaxed">
-                      بتنێ ڤی دەنگی دکەتە پەرتووکەکا سەربەخۆ (PDF / Word) بێی کو وانا ئێکێ یان چ پەرتووکێن دی پێڤە گرێبدەت.
-                    </p>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAudioTargetMode('append');
-                      const tb = allBooks.find((b) => b.id === targetAppendBookId);
-                      const nextNum = (tb?.audioTracks?.length || 1) + 1;
-                      setAudioLessonTitleInput(getKurdishLessonTitle(nextNum));
-                    }}
-                    className={`p-4 rounded-xl border text-right transition-all cursor-pointer flex flex-col gap-1 ${
-                      audioTargetMode === 'append'
-                        ? 'bg-[#EFF6FF] border-[#2563EB] ring-1 ring-[#2563EB]'
-                        : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100/70'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                        <Link2 className="w-4 h-4 text-[#2563EB]" />
-                        <span>٢. پێکڤەگرێدان دگەل پەرتووکەکا بەرێ</span>
-                      </span>
-                      {audioTargetMode === 'append' && (
-                        <Check className="w-4 h-4 text-[#2563EB] shrink-0" />
-                      )}
-                    </div>
-                    <p className="text-[11px] text-slate-600 leading-relaxed">
-                      دەنگێ نوی دێ ل دویڤ لاپەرێ دوماهیێ یێ پەرتووکا هەلبژارتی زێدە بیت دا هەردوو دەنگ پێکڤە ببنە ئێک پەرتووک.
-                    </p>
-                  </button>
-                </div>
-
-                {/* If Append Mode is active, select which book to append onto AND manage/delete its existing lessons */}
-                {audioTargetMode === 'append' && (
-                  <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-xl space-y-3">
-                    <label className="block text-xs font-bold text-slate-800">
-                      دێ ڤی دەنگی ب کیژ پەرتووکێ ڤە گرێدەی؟
-                    </label>
-                    <select
-                      value={targetAppendBookId}
-                      onChange={(e) => {
-                        const newTargetId = e.target.value;
-                        setTargetAppendBookId(newTargetId);
-                        const tb = allBooks.find((b) => b.id === newTargetId);
-                        const nextNum = (tb?.audioTracks?.length || 1) + 1;
-                        setAudioLessonTitleInput(getKurdishLessonTitle(nextNum));
-                      }}
-                      className="w-full px-3.5 py-2.5 text-xs font-semibold bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                    >
-                      {allBooks.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.title} — ({toEasternArabicNumerals(b.pages.length)} لاپەر هەنە، دەنگێ نوی دێ ژ لاپەرێ{' '}
-                          {toEasternArabicNumerals(b.pages.length + 1)} دەستپێکەت)
-                        </option>
-                      ))}
-                    </select>
-
-                    {/* Show existing lessons of the selected target book with ability to delete any wrong lesson */}
-                    {(() => {
-                      const selectedTargetBook = allBooks.find((b) => b.id === targetAppendBookId);
-                      if (
-                        !selectedTargetBook ||
-                        !selectedTargetBook.audioTracks ||
-                        selectedTargetBook.audioTracks.length === 0
-                      ) {
-                        return null;
-                      }
-                      return (
-                        <div className="pt-2 border-t border-slate-200/70 space-y-2">
-                          <div className="text-[11px] font-heading font-bold text-slate-600">
-                            وانەیێن نوکە د ناڤ ڤێ پەرتووکێ دا (ئەگەر وانەیەک خەلەت هاتبيت دشێی ژێببەی):
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            {selectedTargetBook.audioTracks.map((trk, idx) => (
-                              <div
-                                key={trk.id}
-                                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs"
-                              >
-                                <span className="font-subtext font-bold text-slate-800">
-                                  وانا {toEasternArabicNumerals(idx + 1)}: {trk.title} (ل{' '}
-                                  {toEasternArabicNumerals(trk.startPage)}–
-                                  {toEasternArabicNumerals(trk.endPage)})
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleDeleteLessonTrack(selectedTargetBook.id, trk.id)
-                                  }
-                                  className="px-2 py-0.5 rounded-md bg-red-50 hover:bg-red-100 text-red-600 font-heading font-bold text-[11px] flex items-center gap-1 cursor-pointer"
-                                  title="ژێبرنا ڤێ وانێ"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                  <span>ژێبرن</span>
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                )}
-              </div>
-
-              {/* Metadata & Convert Action when Audio File(s) Selected */}
-              {selectedAudioFiles.length > 0 && (
-                <div className="p-5 bg-[#F8FAFF] border border-[#DCE7FF] rounded-2xl space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        سەردێڕێ ڤێ وانێ (بۆ نموونە: وانا دووێ)
-                      </label>
-                      <input
-                        type="text"
-                        value={audioLessonTitleInput}
-                        onChange={(e) => setAudioLessonTitleInput(e.target.value)}
-                        placeholder="بۆ نموونە: وانا دووێ"
-                        className="w-full px-3.5 py-2.5 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        ناڤێ پەرتووکێ
-                      </label>
-                      <input
-                        type="text"
-                        value={audioBookTitleInput}
-                        onChange={(e) => setAudioBookTitleInput(e.target.value)}
-                        placeholder="بۆ نموونە: پەرتووکا القواعد الأربع - وانا دووێ"
-                        className="w-full px-3.5 py-2.5 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        ناڤێ مامۆستای / وانەبێژی
-                      </label>
-                      <input
-                        type="text"
-                        value={audioSpeakerInput}
-                        onChange={(e) => setAudioSpeakerInput(e.target.value)}
-                        placeholder="بۆ نموونە: مامۆستا مەلا رەمەزان"
-                        className="w-full px-3.5 py-2.5 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
-                    <div className="space-y-1">
-                      <p className="text-xs text-slate-600">
-                        {audioTargetMode === 'append'
-                          ? 'ئەڤ دەنگە پەیڤ ب پەیڤ دێ هێتە نڤیسین و راستەوخۆ ب دوماهیا لاپەرێن پەرتووکا هەلبژارتی ڤە هێتە گرێدان.'
-                          : 'ئەڤ دەنگە ب تەمامی ب جودا و سەربەخۆ دێ بیتە پەرتووک (PDF / Word) بێی کو وانا ئێکێ بکەڤیتە سەر.'}
-                      </p>
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-[#1E40AF]">
-                        <Clock className="w-3.5 h-3.5 shrink-0" />
-                        <span>
-                          دەمێ پێدڤی بۆ چێکرنا پەرتووکێ ژ ڤی دەنگی: نێزیکی{' '}
-                          {formatDurationKurdish(estimatedAudioTotalSec)}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleConvertAudioToBook}
-                      disabled={isConvertingAudio}
-                      className="px-6 py-2.5 text-xs font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-60 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
-                    >
-                      {isConvertingAudio ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          <span>
-                            دەنگ یێ دهێتە نڤیسین ({formatDurationKurdish(audioElapsedSec)})...
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-4 h-4" />
-                          <span>
-                            {audioTargetMode === 'append'
-                              ? 'ڤی دەنگی ب پەرتووکێ ڤە گرێبدە (WORD / PDF)'
-                              : 'بکە پەرتووکەکا سەربەخۆ (WORD و PDF)'}
-                          </span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Dedicated Audio Books History / Library ("پەرتووکێن دەنگی — جودا ژ پەرتووکێن وەرگێرای") */}
-          <div
-            id="audio-books-library-section"
-            className="max-w-4xl mx-auto bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 space-y-5 shadow-[0_10px_35px_rgba(15,23,42,0.03)]"
-          >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
-              <div>
-                <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <Headphones className="w-4 h-4 text-[#2563EB]" />
-                  <span>
-                    پەرتووکخانەیا دەنگی ({toEasternArabicNumerals(audioBooksList.length)} پەرتووکێن دەنگی)
-                  </span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  ل ڤێرە دشێی هەر پەرتووکەکا دەنگی یان هەر وانەیەکا (دەرسەکا) خەلەت ژێببەی، یان ب PDF و Word داگری
-                </p>
-              </div>
-              {(deletedBookIds.includes(SHAKHSIYA_QAWIYA_BOOK_ID) ||
-                deletedBookIds.includes(QAWAID_LESSON1_BOOK_ID)) && (
-                <button
-                  type="button"
-                  onClick={handleRestoreBuiltInBooks}
-                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-heading font-bold flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
-                >
-                  <RotateCcw className="w-3.5 h-3.5 text-[#2563EB]" />
-                  <span>زڤڕاندنا پەرتووکێن سەرەکی</span>
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 gap-3">
-              {audioBooksList.map((book) => {
-                const isSelected = book.id === activeBook.id;
-                return (
-                  <div
-                    key={book.id}
-                    onClick={() => {
-                      setActiveBookId(book.id);
-                      setCurrentPage(1);
-                      setActiveSection('reader');
-                    }}
-                    className={`p-4 sm:p-5 rounded-xl border transition-all flex flex-col gap-3 cursor-pointer group ${
-                      isSelected
-                        ? 'bg-[#F8FAFF] border-[#2563EB]/40 shadow-xs'
-                        : 'bg-white hover:bg-slate-50/80 border-slate-200/80'
-                    }`}
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                          <span className="px-2.5 py-0.5 rounded-md bg-[#EFF6FF] text-[#2563EB] font-bold flex items-center gap-1">
-                            <Headphones className="w-3 h-3" />
-                            <span>پەرتووکا دەنگی</span>
-                          </span>
-                          <span>·</span>
-                          <span className="tabular-nums font-bold text-slate-700">
-                            {toEasternArabicNumerals(book.pages.length)} لاپەر
-                          </span>
-                          {book.audioTracks && book.audioTracks.length > 0 && (
-                            <>
-                              <span>·</span>
-                              <span className="text-slate-600 font-medium">
-                                {toEasternArabicNumerals(book.audioTracks.length)} وانە
-                              </span>
-                            </>
-                          )}
-                        </div>
-                        <div className="text-xs sm:text-[13.5px] font-heading font-bold text-slate-900 group-hover:text-[#2563EB] transition-colors leading-relaxed">
-                          {book.title}
-                        </div>
-                      </div>
-
-                      <div
-                        className="flex flex-wrap items-center gap-2 shrink-0"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveBookId(book.id);
-                            setCurrentPage(1);
-                            setActiveSection('reader');
-                          }}
-                          className="px-3.5 py-1.5 text-xs font-heading font-bold rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white transition-colors cursor-pointer flex items-center gap-1.5"
-                        >
-                          <BookOpen className="w-3.5 h-3.5" />
-                          <span>دەستپێکرنا خواندنێ</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleExportSpecificBookWord(
-                              book.pages,
-                              book.headerTitle,
-                              `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.doc`,
-                              book.id
-                            )
-                          }
-                          disabled={isGeneratingWord}
-                          className="px-3 py-1.5 text-xs font-heading font-bold text-[#1E40AF] bg-[#E8F0FE] hover:bg-[#D2E3FC] rounded-lg cursor-pointer flex items-center gap-1"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                          <span>WORD</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleExportSpecificBookPdf(
-                              book.pages,
-                              book.headerTitle,
-                              `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.pdf`,
-                              book.id
-                            )
-                          }
-                          disabled={isGeneratingPdf}
-                          className="px-3 py-1.5 text-xs font-heading font-bold text-[#B91C1C] bg-[#FEE2E2] hover:bg-[#FECACA] rounded-lg cursor-pointer flex items-center gap-1"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>PDF</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCustomBook(book.id)}
-                          title="ژێبرنا ڤێ پەرتووکێ"
-                          className="px-2.5 py-1.5 text-xs font-heading font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>ژێبرن</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Individual Lessons (وانە / دەرس) inside this book with per-lesson Read & Delete buttons */}
-                    {book.audioTracks && book.audioTracks.length > 0 && (
-                      <div
-                        className="pt-2.5 border-t border-slate-100 flex flex-wrap items-center gap-2"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <span className="text-[11px] font-heading font-bold text-slate-500">
-                          وانەیێن ناڤ پەرتووکێ:
-                        </span>
-                        {book.audioTracks.map((trk, idx) => (
+                    {/* Prepared Files Ready-to-Download */}
+                    {preparedFiles.length > 0 && (
+                      <div className="pt-3 border-t border-white/15 space-y-2.5">
+                        <h3 className="text-xs font-heading font-bold text-white/80 flex items-center gap-1.5">
+                          <FolderDown className="w-3.5 h-3.5 text-emerald-400" />
+                          فایلێن ئامادە ({toEasternArabicNumerals(preparedFiles.length)})
+                        </h3>
+                        {preparedFiles.map((item) => (
                           <div
-                            key={trk.id}
-                            className="inline-flex items-center rounded-lg bg-slate-50 border border-slate-200/90 overflow-hidden text-[11px]"
+                            key={item.id}
+                            className="flex items-center justify-between p-3 rounded-2xl bg-black/30 border border-white/12"
                           >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setActiveBookId(book.id);
-                                setCurrentPage(trk.startPage);
-                                setActiveSection('reader');
-                              }}
-                              className="px-2.5 py-1 font-subtext font-bold text-slate-700 hover:text-[#2563EB] cursor-pointer"
-                            >
-                              وانا {toEasternArabicNumerals(idx + 1)} (ل{' '}
-                              {toEasternArabicNumerals(trk.startPage)}–
-                              {toEasternArabicNumerals(trk.endPage)})
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteLessonTrack(book.id, trk.id)}
-                              title="ژێبرنا ڤێ وانێ (دەرسێ)"
-                              className="px-2 py-1 border-r border-slate-200 text-red-600 hover:bg-red-50 font-heading font-bold flex items-center gap-0.5 cursor-pointer"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              <span>ژێبرنا وانێ</span>
-                            </button>
+                            <div className="min-w-0">
+                              <div className="text-[11px] font-heading font-bold text-white truncate">
+                                {item.fileName}
+                              </div>
+                              <div className="text-[10px] text-white/60">
+                                {item.createdAtLabel}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleDirectTriggerSave(item)}
+                                className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-gradient-to-r from-blue-500 to-blue-600 text-white hover:brightness-110 cursor-pointer"
+                              >
+                                <Download className="w-3 h-3 inline ml-1 text-white" />
+                                داگرتن
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleNativeSharePreparedFile(item)}
+                                className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-white/15 text-white border border-white/15 hover:bg-white/25 cursor-pointer"
+                              >
+                                <Share2 className="w-3 h-3 inline ml-1" />
+                                هاوبەشکرن
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPreparedFiles((prev) =>
+                                    prev.filter((pf) => pf.id !== item.id)
+                                  )
+                                }
+                                title="ژێبرن"
+                                className="p-1.5 rounded-full bg-red-500/20 text-red-300 hover:bg-red-500/35 cursor-pointer"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </main>
-      )}
-
-      {/* =====================================================================
-          SECTION 4: BOOK TRANSLATOR & LIBRARY ("وەرگێرانا پەرتووکێ و پەرتووکخانە") — Matching Image 1
-         ===================================================================== */}
-      {activeSection === 'upload' && (
-        <main className="no-print flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 pt-2.5 pb-6 sm:py-10 space-y-6 sm:space-y-8">
-          {/* Top Sub-Header Row Matching Image 1: "Book" Pill on one side & "History / پەرتووکخانە" Pill on the other */}
-          <div className="max-w-4xl mx-auto space-y-4">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <span className="px-5 py-2 rounded-xl bg-[#DCE7FF] text-[#1E3A8A] font-heading font-extrabold text-sm shadow-2xs">
-                  Book / پەرتووک
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('audio')}
-                  className="px-4 py-2 rounded-xl bg-white/80 hover:bg-white text-slate-600 hover:text-slate-900 font-heading font-bold text-xs border border-slate-200/70 transition-colors cursor-pointer"
-                >
-                  دەنگ بۆ پەرتووک
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  document
-                    .getElementById('books-library-section')
-                    ?.scrollIntoView({ behavior: 'smooth' });
-                }}
-                className="px-4 py-2 rounded-full bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/80 shadow-2xs text-xs font-heading font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <Clock className="w-3.5 h-3.5 text-[#2563EB]" />
-                <span>پەرتووکخانە ({toEasternArabicNumerals(translatedBooksList.length)})</span>
-              </button>
-            </div>
-
-            {/* Main White Upload & Translation Studio Card — Exact Visual Match to Image 1 */}
-            <div className="bg-white rounded-2xl shadow-[0_12px_40px_rgba(15,23,42,0.04)] border border-slate-100 p-5 sm:p-10 space-y-6">
-              {uploadError && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800">
-                  {uploadError}
                 </div>
               )}
+            </motion.div>
+          </AnimatePresence>
+          </main>
+        </div>
 
-              {/* Dashed Upload Dropzone with the 5 Colorful Format Icons */}
-              <label className="block border border-dashed border-slate-300 hover:border-[#2563EB] rounded-xl py-10 sm:py-13 px-4 sm:px-6 text-center bg-[#FCFDFE] hover:bg-[#F8FAFF] transition-all cursor-pointer group">
-                <input
-                  type="file"
-                  accept="application/pdf,.pdf,.doc,.docx,.txt"
-                  onChange={handleSelectArabicPdfFile}
-                  className="hidden"
-                />
-
-                {/* 5 Colorful Document Format Icons Row (.DOC, .PDF, .PPT, .XSL, .TXT) — Kept & Properly Sized so Badges Never Clip */}
-                <div
-                  dir="ltr"
-                  className="flex flex-wrap items-center justify-center gap-2.5 sm:gap-4 mb-6 select-none"
-                >
-                  {[
-                    { ext: '.DOC', badgeBg: '#3B82F6', tintBg: '#EFF6FF', lineClr: '#93C5FD' },
-                    { ext: '.PDF', badgeBg: '#EF4444', tintBg: '#FEF2F2', lineClr: '#FCA5A5' },
-                    { ext: '.PPT', badgeBg: '#F59E0B', tintBg: '#FFFBEB', lineClr: '#FCD34D' },
-                    { ext: '.XSL', badgeBg: '#10B981', tintBg: '#ECFDF5', lineClr: '#6EE7B7' },
-                    { ext: '.TXT', badgeBg: '#8B5CF6', tintBg: '#F5F3FF', lineClr: '#C4B5FD' },
-                  ].map((item) => (
-                    <div
-                      key={item.ext}
-                      className="relative w-14 h-17 sm:w-16 sm:h-19 rounded-xl border border-slate-200/80 shadow-2xs flex flex-col justify-between p-1.5 sm:p-2 transition-transform group-hover:-translate-y-0.5"
-                      style={{ backgroundColor: item.tintBg }}
-                    >
-                      {/* Top document lines */}
-                      <div className="space-y-1.5 pt-1 px-0.5">
-                        <div
-                          className="h-1 w-5 rounded-full"
-                          style={{ backgroundColor: item.lineClr }}
-                        />
-                        <div
-                          className="h-1 w-full rounded-full"
-                          style={{ backgroundColor: item.lineClr }}
-                        />
-                        <div
-                          className="h-1 w-4/5 rounded-full"
-                          style={{ backgroundColor: item.lineClr }}
-                        />
-                      </div>
-                      {/* Colored Format Pill Badge */}
-                      <span
-                        dir="ltr"
-                        className="block w-full py-0.5 px-1 rounded-md text-[9px] sm:text-[10px] font-mono font-extrabold text-white text-center leading-tight shadow-2xs"
-                        style={{ backgroundColor: item.badgeBg }}
-                      >
-                        {item.ext}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Primary Heading Line (Font 2: Noto Kufi Arabic) */}
-                <h2 className="font-heading text-xs sm:text-[14.5px] font-extrabold text-slate-900 max-w-xl mx-auto leading-relaxed mb-2">
-                  فایلا خو بکە دڤێرەدا ژبو وەرگێران و دروستکرنا وی تشتی یێ تە بڤێت (WORD یان PDF)
-                </h2>
-
-                {/* Secondary Subtext Line Underneath (Clean Secondary Font) */}
-                <p className="font-subtext text-xs sm:text-[13px] text-slate-600 mb-3">
-                  فایلێ بکێشە ڤێرە یان{' '}
-                  <span className="text-[#2563EB] font-heading font-bold group-hover:underline">
-                    فایلا خۆ هەلبژێرە بۆ بارکرنێ
-                  </span>
-                </p>
-
-                {/* Separated LTR Formats Line + Clean RTL Kurdish Subtext (No BiDi Scrambling) */}
-                <div className="space-y-1 max-w-md mx-auto">
-                  <div
-                    dir="ltr"
-                    className="text-[11px] font-mono font-semibold text-slate-400 tracking-wide"
-                  >
-                    DOC, DOCX, PDF, XLS, XLSX, PPT, PPTX, EPUB, TXT
-                  </div>
-                  <p className="font-subtext text-[11px] sm:text-xs text-slate-500">
-                    وەرگێران بۆ بادینی ب شێوەیێ WORD و PDF
-                  </p>
-                </div>
-
-                {selectedPdfFile && (
-                  <div className="mt-5 pt-4 border-t border-slate-200/80 text-xs text-slate-700 flex flex-wrap items-center justify-center gap-2">
-                    <span className="font-heading font-bold text-slate-900">{selectedPdfFile.name}</span>
-                    <span>·</span>
-                    <span className="text-[#2563EB] font-heading font-extrabold">
-                      {toEasternArabicNumerals(selectedPdfPageCount)} لاپەر هاتنە دیتن
-                    </span>
-                  </div>
-                )}
-              </label>
-
-              {/* Selected File Translation & Output Format Controls (WORD or PDF) */}
-              {selectedPdfFile && selectedPdfPageCount > 0 && (
-                <div className="p-5 bg-[#F8FAFF] border border-[#DCE7FF] rounded-2xl space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div className="sm:col-span-1">
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        ناڤێ پەرتووکێ ب بادینی
-                      </label>
-                      <input
-                        type="text"
-                        value={customBookTitleInput}
-                        onChange={(e) => setCustomBookTitleInput(e.target.value)}
-                        placeholder="ناڤێ پەرتووکێ..."
-                        className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        دەستپێکرن ژ لاپەرێ
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={selectedPdfPageCount}
-                        value={uploadStartPage}
-                        onChange={(e) => setUploadStartPage(Number(e.target.value))}
-                        className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-[#2563EB]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        هەتا لاپەرێ (ژ {toEasternArabicNumerals(selectedPdfPageCount)})
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={selectedPdfPageCount}
-                        value={uploadEndPage}
-                        onChange={(e) => setUploadEndPage(Number(e.target.value))}
-                        className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-[#2563EB]"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
-                    <div className="space-y-1">
-                      <p className="text-xs text-slate-500">
-                        پشتی تەمامبوونا وەرگێرانێ، تو دشێی ئێکسەر ب شێوەیێ WORD (.doc) یان PDF داگری و سەیڤ بکەی.
-                      </p>
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-[#1E40AF]">
-                        <Clock className="w-3.5 h-3.5 shrink-0" />
-                        <span>
-                          دەمێ تەخمینی یێ پێدڤی بۆ وەرگێرانا{' '}
-                          {toEasternArabicNumerals(Math.max(1, uploadEndPage - uploadStartPage + 1))}{' '}
-                          لاپەران: نێزیکی {formatDurationKurdish(estimatedPdfTotalSec)}
-                        </span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleStartTranslateUploadedPdf}
-                      disabled={isTranslatingUpload}
-                      className="px-6 py-2.5 text-xs font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-60 rounded-xl shadow-sm transition-colors flex items-center gap-2 cursor-pointer"
-                    >
-                      <Sparkles className="w-4 h-4" />
-                      <span>
-                        {isTranslatingUpload
-                          ? `د قۆناغا وەرگێرانێ دایە (مایە: ${formatDurationKurdish(remainingPdfUploadSec)})...`
-                          : `دەستپێکرنا وەرگێرانێ بۆ WORD و PDF (${toEasternArabicNumerals(
-                              Math.max(1, uploadEndPage - uploadStartPage + 1)
-                            )} لاپەر)`}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Part B: Saved Translated Books Library ("پەرتووکێن هاتینە وەرگێران") — Separated from Audio Books */}
-          <div
-            id="books-library-section"
-            className="max-w-4xl mx-auto bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 space-y-5 shadow-[0_10px_35px_rgba(15,23,42,0.03)]"
+        {/* ─────────────────────────────────────────────────────────────────────────
+            COLUMN 3 (Right Stacked 3D Widget Cards - Laptop/Desktop Only):
+            Hidden on mobile (`hidden lg:flex`), active and interactive on laptop.
+           ───────────────────────────────────────────────────────────────────────── */}
+        <div
+          dir="rtl"
+          className="no-print hidden lg:flex lg:w-[300px] shrink-0 flex-col gap-5 lg:h-full"
+        >
+          {/* TOP CARD: Top Right Sky/Royal Blue 3D Widget Card (.glass-card-blue) */}
+          <motion.div
+            whileHover={{ y: -4 }}
+            transition={{ type: 'spring', stiffness: 360, damping: 28 }}
+            className="glass-card-blue p-5 flex flex-col justify-between gap-4"
           >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
-              <div>
-                <h2 className="text-sm sm:text-base font-heading font-bold text-slate-900 flex items-center gap-2">
-                  <Library className="w-4 h-4 text-[#2563EB]" />
-                  <span>
-                    پەرتووکخانەیا پەرتووکێن وەرگێرای ({toEasternArabicNumerals(translatedBooksList.length)} پەرتووک)
-                  </span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  کلیک ل سەر هەر پەرتووکەکێ بکە دا ئێکسەر دەست ب خواندنا وێ بهێتە کرن، یان ب شێوەیێ WORD یان PDF داگرە یان ژێببە
-                </p>
-              </div>
-              {deletedBookIds.includes(DEFAULT_BOOK_ID) && (
-                <button
-                  type="button"
-                  onClick={handleRestoreBuiltInBooks}
-                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-heading font-bold flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
-                >
-                  <RotateCcw className="w-3.5 h-3.5 text-[#2563EB]" />
-                  <span>زڤڕاندنا پەرتووکا سەرەکی</span>
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 gap-3">
-              {translatedBooksList.map((book) => {
-                const isSelected = book.id === activeBook.id;
-                return (
-                  <div
-                    key={book.id}
-                    onClick={() => {
-                      setActiveBookId(book.id);
-                      setCurrentPage(1);
-                      setActiveSection('reader');
-                    }}
-                    className={`p-4 sm:p-5 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer group ${
-                      isSelected
-                        ? 'bg-[#F8FAFF] border-[#2563EB]/40 shadow-xs'
-                        : 'bg-white hover:bg-slate-50/80 border-slate-200/80'
-                    }`}
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 text-xs text-slate-500">
-                        <span className="font-bold text-[#2563EB]">
-                          {book.createdAt || (book.isDefault ? 'پەرتووکا سەرەکی' : 'پەرتووکا زێدەکری')}
-                        </span>
-                        <span>·</span>
-                        <span className="tabular-nums font-bold text-slate-700">
-                          {toEasternArabicNumerals(book.pages.length)} لاپەر
-                        </span>
-                      </div>
-                      <div className="text-xs sm:text-[13.5px] font-heading font-bold text-slate-900 group-hover:text-[#2563EB] transition-colors leading-relaxed">
-                        {book.title}
-                      </div>
-                    </div>
-
-                    <div
-                      className="flex flex-wrap items-center gap-2 shrink-0"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveBookId(book.id);
-                          setCurrentPage(1);
-                          setActiveSection('reader');
-                        }}
-                        className="px-3.5 py-1.5 text-xs font-heading font-bold rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white transition-colors cursor-pointer flex items-center gap-1.5"
-                      >
-                        <BookOpen className="w-3.5 h-3.5" />
-                        <span>دەستپێکرنا خواندنێ</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleExportSpecificBookWord(
-                            book.pages,
-                            book.headerTitle,
-                            `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.doc`,
-                            book.id
-                          )
-                        }
-                        disabled={isGeneratingWord}
-                        className="px-3 py-1.5 text-xs font-heading font-bold text-[#1E40AF] bg-[#E8F0FE] hover:bg-[#D2E3FC] rounded-lg cursor-pointer flex items-center gap-1"
-                      >
-                        <FileText className="w-3.5 h-3.5" />
-                        <span>WORD</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleExportSpecificBookPdf(
-                            book.pages,
-                            book.headerTitle,
-                            `${book.headerTitle.replace(/\s+/g, '-')}-بادینی.pdf`,
-                            book.id
-                          )
-                        }
-                        disabled={isGeneratingPdf}
-                        className="px-3 py-1.5 text-xs font-heading font-bold text-[#B91C1C] bg-[#FEE2E2] hover:bg-[#FECACA] rounded-lg cursor-pointer flex items-center gap-1"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>PDF</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteCustomBook(book.id)}
-                        title="ژێبرنا ڤێ پەرتووکێ"
-                        className="px-2.5 py-1.5 text-xs font-heading font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>ژێبرن</span>
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Part C: One-Click Merge Any Two Existing Books into One Unified Book (Moved to Arabic-to-Badini Book Section per User Request) */}
-          {allBooks.length >= 2 && (
-            <div className="max-w-4xl mx-auto bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 space-y-4 shadow-[0_10px_35px_rgba(15,23,42,0.03)]">
-              <div className="border-b border-slate-100 pb-3">
-                <h3 className="font-heading text-sm sm:text-base font-extrabold text-slate-900 flex items-center gap-2">
-                  <Link2 className="w-4 h-4 text-[#2563EB]" />
-                  <span>پێکڤەگرێدانا دوو پەرتووکێن بەردەست د ناڤ ئێک پەرتووک دا</span>
-                </h3>
-                <p className="font-subtext text-xs text-slate-500 mt-1">
-                  ل ڤێرە دشێی هەر دوو پەرتووکێن بەردەست پێکڤە گرێبدەی دا ببنە ئێک پەرتووکا گشتی ب ژمارەیا لاپەران یا بەردەوام.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-heading font-bold text-slate-700 mb-1.5">
-                    پەرتووکا ئێکێ (یا سەرەکی):
-                  </label>
-                  <select
-                    value={mergePrimaryBookId}
-                    onChange={(e) => setMergePrimaryBookId(e.target.value)}
-                    className="w-full px-3 py-2.5 text-xs font-subtext bg-slate-50 border border-slate-300 rounded-xl"
-                  >
-                    {allBooks.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.title} ({toEasternArabicNumerals(b.pages.length)} لاپەر)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-heading font-bold text-slate-700 mb-1.5">
-                    پەرتووکا دووێ (دێ ب دویڤ پەرتووکا ئێکێ ڤە هێتە گرێدان):
-                  </label>
-                  <select
-                    value={mergeSecondaryBookId}
-                    onChange={(e) => setMergeSecondaryBookId(e.target.value)}
-                    className="w-full px-3 py-2.5 text-xs font-subtext bg-slate-50 border border-slate-300 rounded-xl"
-                  >
-                    <option value="">-- پەرتووکا دووێ هەلبژێرە --</option>
-                    {allBooks
-                      .filter((b) => b.id !== mergePrimaryBookId)
-                      .map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.title} ({toEasternArabicNumerals(b.pages.length)} لاپەر)
-                        </option>
-                      ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={handleMergeTwoBooks}
-                  disabled={!mergeSecondaryBookId || mergePrimaryBookId === mergeSecondaryBookId}
-                  className="px-5 py-2.5 text-xs font-heading font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-40 rounded-xl transition-colors flex items-center gap-2 cursor-pointer"
-                >
-                  <Link2 className="w-4 h-4" />
-                  <span>هەردوو پەرتووکان پێکڤە گرێبدە بکە ئێک پەرتووک</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </main>
-      )}
-
-      {/* =====================================================================
-          SECTION 5: UNIFIED AI BOOK & DESIGN STUDIO ASSISTANT
-          ("ڕۆبۆتێ زیرەک یێ دیزاینکرن و رێکخستنا پەرتووکێ")
-         ===================================================================== */}
-      {activeSection === 'chat' && (
-        <main className="no-print flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-2.5 pb-6 sm:py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left/Main Studio Panel (7 cols on desktop): Unified All-in-One AI Bot Studio */}
-          <div className="lg:col-span-7 bg-white border border-slate-200/80 rounded-2xl shadow-[0_12px_40px_rgba(15,23,42,0.05)] flex flex-col overflow-hidden min-h-[600px]">
-            {/* Clean White & Royal Blue Studio Header (Replaces cramped dark multi-tab header) */}
-            <div className="px-4 sm:px-6 py-4 bg-white border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-start gap-3 min-w-0">
-                <span className="w-10 h-10 rounded-xl bg-[#EFF6FF] text-[#2563EB] border border-[#DCE7FF] flex items-center justify-center shrink-0 mt-0.5">
-                  <Sparkles className="w-5 h-5" />
+            {/* Card Header & Metric */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-heading font-bold text-blue-100/90">
+                  چالاکییا خویندن و وەرگێرانێ ({activeActivityDay.dayName})
                 </span>
-                <div className="min-w-0 space-y-1">
-                  <h2 className="font-heading text-xs sm:text-sm font-extrabold text-slate-900">
-                    ڕۆبۆتێ زیرەک یێ دیزاینکرن و رێکخستنا پەرتووکێ (AI)
-                  </h2>
-                  <p className="font-subtext text-xs text-slate-500 truncate">
-                    {activeBook.title}
-                  </p>
-                </div>
-              </div>
-
-              {/* Page Selector for Live Preview */}
-              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2.5 py-1.5 rounded-xl text-xs shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setCurrentPage(1)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-heading font-bold cursor-pointer transition-colors ${
-                    currentPage === 1
-                      ? 'bg-[#2563EB] text-white'
-                      : 'text-slate-600 hover:bg-slate-200/70'
-                  }`}
-                >
-                  لاپەر ١
-                </button>
-                <button
-                  type="button"
-                  disabled={currentPage <= 1}
-                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                  className="p-1 text-slate-600 hover:text-slate-900 disabled:opacity-40 cursor-pointer"
-                >
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-                <span className="font-subtext text-slate-700 font-bold tabular-nums px-1">
-                  لاپەر {toEasternArabicNumerals(currentPage)} / {toEasternArabicNumerals(maxPageCount)}
-                </span>
-                <button
-                  type="button"
-                  disabled={currentPage >= maxPageCount}
-                  onClick={() => setCurrentPage((p) => Math.min(maxPageCount, p + 1))}
-                  className="p-1 text-slate-600 hover:text-slate-900 disabled:opacity-40 cursor-pointer"
-                >
-                  <ChevronLeft className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {editorStatusBanner && (
-              <div className="px-4 py-2.5 bg-emerald-50 border-b border-emerald-200 text-emerald-900 text-xs flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-subtext font-bold">
-                  <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>{editorStatusBanner}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setEditorStatusBanner(null)}
-                  className="text-emerald-700 hover:text-emerald-950 text-[11px] font-heading cursor-pointer shrink-0"
-                >
-                  داخستن
-                </button>
-              </div>
-            )}
-
-            {/* Chat Messages History */}
-            <div
-              ref={chatScrollRef}
-              className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3.5 bg-slate-50/40 max-h-[480px]"
-            >
-              {chatMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex flex-col ${
-                    msg.role === 'user' ? 'items-start' : 'items-end'
-                  }`}
-                >
-                  <div
-                    className={`max-w-[88%] rounded-2xl px-4 py-3.5 text-[13px] font-subtext space-y-2.5 ${
-                      msg.role === 'user'
-                        ? 'bg-[#1E3A8A] text-white'
-                        : 'bg-white border border-slate-200/90 text-slate-800 shadow-2xs'
-                    }`}
-                  >
-                    {msg.imageDataUrl && (
-                      <div className="rounded-xl overflow-hidden border border-white/20 bg-black/20 max-w-[230px]">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={msg.imageDataUrl}
-                          alt={msg.imageName || 'وێنەیێ دیزاینێ'}
-                          className="w-full max-h-44 object-contain"
-                        />
-                        {msg.imageName && (
-                          <div className="px-2.5 py-1 text-[10px] text-slate-200 truncate bg-black/40">
-                            {msg.imageName}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    <p className="font-subtext">{msg.text}</p>
-
-                    {msg.didUpdateDesign &&
-                      (msg.previousDesignSnapshot || msg.previousPagesSnapshot) && (
-                        <div className="mt-2 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-3">
-                          <span className="text-[11px] font-heading text-emerald-700 font-bold flex items-center gap-1">
-                            <Check className="w-3.5 h-3.5" />
-                            <span>ب سەرکەفتیانە هاتە جێبەجێکرن</span>
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleUndoChatDesign(msg)}
-                            className="text-[11px] font-heading text-slate-500 hover:text-slate-900 flex items-center gap-1 underline cursor-pointer"
-                          >
-                            <RotateCcw className="w-3 h-3" />
-                            <span>زڤڕاندن</span>
-                          </button>
-                        </div>
-                      )}
-                  </div>
-                </div>
-              ))}
-
-              {isChatLoading && (
-                <div className="flex items-center gap-2.5 text-xs text-[#2563EB] font-heading font-bold px-3.5 py-2.5 bg-blue-50 rounded-xl w-fit border border-blue-200">
-                  <RefreshCw className="w-4 h-4 animate-spin text-[#2563EB]" />
-                  <span>ڕۆبۆت یێ داخازا تە جێبەجێ دکەت...</span>
-                </div>
-              )}
-            </div>
-
-            {/* Attached Design Reference Image Preview Bar */}
-            {chatImageDataUrl && (
-              <div className="px-4 py-3 bg-blue-50/90 border-t border-blue-200 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={chatImageDataUrl}
-                    alt="Preview"
-                    className="w-12 h-12 rounded-xl object-cover border border-blue-300 bg-white shrink-0"
-                  />
-                  <div className="min-w-0 space-y-0.5">
-                    <div className="text-xs font-heading font-extrabold text-[#1E3A8A] truncate">
-                      وێنە ئامادەیە ({chatImageName || 'وێنە'})
-                    </div>
-                    <p className="text-[11px] font-subtext text-slate-600">
-                      بنڤیسە کا تە چ ژ ڤی وێنەی دڤێت یان ئێکسەر کلیک ل سەر «جێبەجێکە» بکە
-                    </p>
-                  </div>
-                </div>
                 <button
                   type="button"
                   onClick={() => {
-                    setChatImageDataUrl(null);
-                    setChatImageName('');
+                    setCurrentPage(activeActivityDay.targetPage);
+                    setActiveSection('reader');
                   }}
-                  className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-slate-500 hover:text-red-600 border border-slate-200 cursor-pointer shrink-0"
-                  title="ژێبرنا وێنەی"
+                  title="ڤەکرنا خویندنگەهێ"
+                  className="w-7 h-7 rounded-full bg-white/15 hover:bg-white/25 border border-white/20 flex items-center justify-center text-white transition-colors cursor-pointer"
                 >
-                  <X className="w-4 h-4" />
+                  <ArrowUpRight className="w-3.5 h-3.5" />
                 </button>
               </div>
-            )}
 
-            {/* Bot Input Form (Supports Text + Image Upload / Paste) */}
-            <form
-              onSubmit={(e) => handleSendChatMessage(e)}
-              className="p-3.5 sm:p-4 bg-white border-t border-slate-200 flex items-center gap-2"
-            >
-              <input
-                ref={chatImageInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleSelectChatDesignImage}
-                className="hidden"
-              />
-              <button
-                type="button"
-                disabled={isChatLoading}
-                onClick={() => chatImageInputRef.current?.click()}
-                title="هنارتنا وێنەی بۆ ڕۆبۆتی"
-                className={`px-3.5 py-2.5 text-xs font-heading font-bold rounded-xl border transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 ${
-                  chatImageDataUrl
-                    ? 'bg-[#EFF6FF] text-[#1D4ED8] border-[#2563EB]'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
-                }`}
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>وێنە</span>
-              </button>
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onPaste={handlePasteChatImage}
-                placeholder="بێژە ڕۆبۆتی چ بکەت (گوهۆڕینا رەنگان، سەرێ لاپەری، بەرگی، ژێبرنا لاپەری، یان وێنەیەکی بهنێرە)..."
-                className="flex-1 px-3.5 py-2.5 text-xs font-subtext bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-              />
-              <button
-                type="submit"
-                disabled={isChatLoading || (!chatInput.trim() && !chatImageDataUrl)}
-                className="px-4 py-2.5 text-xs font-heading font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>جێبەجێکە</span>
-              </button>
-            </form>
-          </div>
-
-          {/* Right/Side Panel (5 cols on desktop): Live Interactive Preview of Book Page & Cover */}
-          <div className="lg:col-span-5 flex flex-col items-center space-y-2.5">
-            <div className="w-full flex items-center justify-between px-2 text-xs font-heading font-bold text-slate-700">
-              <span>
-                پێشبینینا راستەوخۆ — لاپەرێ {toEasternArabicNumerals(currentPage)} (
-                {toEasternArabicNumerals(activeBookDesign.fontColorCount)} رەنگ)
-              </span>
-              <button
-                type="button"
-                onClick={() => setEditingPageNumber(currentPage)}
-                className="text-[#2563EB] hover:underline font-heading font-bold cursor-pointer flex items-center gap-1"
-              >
-                <Edit3 className="w-3.5 h-3.5" />
-                <span>دەستکاریا نڤیسینێ</span>
-              </button>
-            </div>
-            {currentPageData && (
-              <BookPageSheet
-                page={currentPageData}
-                fontSizePt={fontSizePt}
-                zoom={0.74}
-                headerTitle={activeBook.headerTitle}
-                bookFontFamily={activeBookFont.cssFamily}
-                design={activeBookDesign}
-                onEditPageClick={(pNum) => setEditingPageNumber(pNum)}
-              />
-            )}
-          </div>
-        </main>
-      )}
-
-      {/* =====================================================================
-          SECTION 6: BOOK FONTS, PDF & WORD EXPORT ("فۆنت و سەیڤکرنا PDF / Word") — Cleanly Reorganized White Card Layout
-         ===================================================================== */}
-      {activeSection === 'export' && (
-        <main className="no-print flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 pt-2.5 pb-6 sm:py-10 space-y-6">
-          {/* Active Book Selector & Quick Export Header Card */}
-          <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 space-y-5 shadow-[0_12px_40px_rgba(15,23,42,0.04)]">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
-              <div className="space-y-1">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#EFF6FF] text-[#2563EB] text-xs font-bold">
-                  <FolderDown className="w-3.5 h-3.5" />
-                  <span>فۆنت و سەیڤکرنا PDF / Word</span>
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="text-3xl font-heading font-extrabold text-white tabular-nums tracking-tight">
+                  {toEasternArabicNumerals(totalLibraryPages)}{' '}
+                  <span className="text-xs font-subtext text-blue-100/80 font-normal">
+                    لاپەر ({toEasternArabicNumerals(activeActivityDay.pages)} د ڤێ رۆژێ دا)
+                  </span>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-heading font-bold bg-emerald-400/20 text-emerald-300 border border-emerald-300/30">
+                  +{toEasternArabicNumerals(activeActivityDay.pct)}٪ ئامادە
                 </span>
-                <h2 className="text-base sm:text-lg font-bold text-slate-900 pt-1">
-                  {activeBook.title}
-                </h2>
-                <p className="text-xs text-slate-500">
-                  ژمارەیا لاپەران: {toEasternArabicNumerals(maxPageCount)} لاپەر · فۆنتێ هەلبژارتی:{' '}
-                  <span className="font-bold text-slate-700">{activeBookFont.shortLabel}</span>
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleDownloadFullWord}
-                  disabled={isGeneratingWord}
-                  className="px-4 py-2.5 text-xs font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-60 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                >
-                  <FileText className="w-4 h-4" />
-                  <span>{isGeneratingWord ? 'ئامادەکرنا Word...' : 'داگرتنا تەمام ب WORD'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadFullPdf}
-                  disabled={isGeneratingPdf}
-                  className="px-4 py-2.5 text-xs font-bold text-white bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-60 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>{isGeneratingPdf ? 'ئامادەکرنا PDF...' : 'داگرتنا تەمام ب PDF'}</span>
-                </button>
               </div>
             </div>
 
-            {/* Switch Which Book to Configure / Export */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  گوهۆرینا پەرتووکێ بۆ داگرتنێ یان گوهۆرینا فۆنتی:
-                </label>
-                <select
-                  value={activeBook.id}
-                  onChange={(e) => {
-                    setActiveBookId(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                  className="w-full px-3.5 py-2.5 text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                >
-                  {allBooks.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.title} ({toEasternArabicNumerals(b.pages.length)} لاپەر)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex sm:justify-end pt-1 sm:pt-5">
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('reader')}
-                  className="w-full sm:w-auto px-4 py-2.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <BookOpen className="w-3.5 h-3.5 text-[#2563EB]" />
-                  <span>ڤەکرنا لاپەرێن پەرتووکێ</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Part 1: Visual Book Font Picker */}
-          <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 space-y-5 shadow-[0_12px_40px_rgba(15,23,42,0.04)]">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
-              <div>
-                <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <Type className="w-4 h-4 text-[#2563EB]" />
-                  <span>١. هەلبژارتنا فۆنتێ پەرتووکێ</span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  هەر فۆنتەکێ تو ل ڤێرە هەلبژێری دێ بۆ خواندنا پەرتووکێ و داگرتنا PDF و Word هێتە بکارئینان
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveSection('reader')}
-                className="px-4 py-2 text-xs font-bold text-[#2563EB] bg-[#EFF6FF] hover:bg-[#DBEAFE] rounded-xl transition-colors cursor-pointer self-start sm:self-auto whitespace-nowrap"
-              >
-                بینینا پەرتووکێ ب ڤی فۆنتی
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {BOOK_FONT_OPTIONS.map((fontOpt) => {
-                const isSelected = bookFontId === fontOpt.id;
-                return (
-                  <button
-                    key={fontOpt.id}
-                    type="button"
-                    onClick={() => handleSelectBookFont(fontOpt.id)}
-                    className={`p-4 rounded-xl border text-right transition-all cursor-pointer flex flex-col justify-between gap-2.5 ${
-                      isSelected
-                        ? 'bg-[#F8FAFF] border-[#2563EB] ring-1 ring-[#2563EB]'
-                        : 'bg-slate-50/70 border-slate-200/80 hover:bg-white hover:border-slate-300'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-slate-900">{fontOpt.label}</span>
-                      {isSelected && <Check className="w-4 h-4 text-[#2563EB] shrink-0" />}
-                    </div>
-                    <div
-                      style={{ fontFamily: fontOpt.cssFamily }}
-                      className="text-base text-slate-900 pt-2 border-t border-slate-200/60 leading-relaxed"
-                    >
-                      {fontOpt.sampleText}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Part 2: PDF & Word Download Options (Full Book & Custom Page Range) */}
-          <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 space-y-6 shadow-[0_12px_40px_rgba(15,23,42,0.04)]">
-            <div className="border-b border-slate-100 pb-4">
-              <h2 className="text-base sm:text-lg font-bold text-slate-900">
-                ٢. سەیڤکرن و داگرتنا پەرتووکێ ب شێوەیێ PDF یان Word
-              </h2>
-              <p className="text-xs text-slate-500 mt-1">
-                تو دشێی تەماما پەرتووکێ یان ژی مەودایەکێ دیارکری یێ لاپەران ب شێوەیێ PDF یان Word (.doc) داگری
-              </p>
-            </div>
-
-            {/* Full Book PDF & Word */}
-            <div className="p-5 bg-[#F8FAFF] border border-[#DCE7FF] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <div className="text-sm sm:text-base font-bold text-slate-900">
-                  داگرتنا تەماما پەرتووکێ (لاپەر ١ هەتا {toEasternArabicNumerals(maxPageCount)})
-                </div>
-                <p className="text-xs text-slate-600">
-                  هەمی لاپەرێن پەرتووکێ د ئێک فایلا PDF یان فایلا Word (.doc) دا ئامادە دکەت بۆ سەیڤکرنێ.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleDownloadFullWord}
-                  disabled={isGeneratingWord}
-                  className="px-5 py-2.5 text-xs font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-60 rounded-xl transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>داگرتنا تەمام ب Word</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadFullPdf}
-                  disabled={isGeneratingPdf}
-                  className="px-5 py-2.5 text-xs font-bold text-white bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-60 rounded-xl transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>داگرتنا تەمام ب PDF</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePrintVectorPdf}
-                  className="px-4 py-2.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Printer className="w-4 h-4 text-slate-600" />
-                  <span>چاپکرنا راستەوخۆ</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Custom Page Range & Quality for PDF & Word */}
-            <div className="p-5 bg-slate-50/80 border border-slate-200/80 rounded-xl space-y-4">
-              <div className="text-sm font-bold text-slate-900">
-                داگرتنا مەودایەکێ دیارکری ژ لاپەران (PDF یان Word)
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    ژ لاپەرێ (١ - {toEasternArabicNumerals(maxPageCount)})
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={maxPageCount}
-                    value={pdfRangeStart}
-                    onChange={(e) => setPdfRangeStart(Number(e.target.value))}
-                    className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-[#2563EB]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    هەتا لاپەرێ (١ - {toEasternArabicNumerals(maxPageCount)})
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={maxPageCount}
-                    value={pdfRangeEnd}
-                    onChange={(e) => setPdfRangeEnd(Number(e.target.value))}
-                    className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl tabular-nums focus:outline-none focus:border-[#2563EB]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    قەبارەیێ فۆنتی (خال / pt)
-                  </label>
-                  <select
-                    value={fontSizePt}
-                    onChange={(e) => setFontSizePt(Number(e.target.value))}
-                    className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-[#2563EB]"
-                  >
-                    <option value={14.5}>١٤.٥ خال (هویرتر)</option>
-                    <option value={15.5}>١٥.٥ خال (قەبارەیێ رەسەن یێ پەرتووکێ)</option>
-                    <option value={16.5}>١٦.٥ خال (مەزنتر)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
-                <div className="flex items-center gap-2 text-xs text-slate-600">
-                  <span className="font-bold">کوالێتییا PDF:</span>
-                  <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl">
+            {/* Interactive 7 Vertical Rounded Activity Bars (Laptop Only) */}
+            <div className="pt-2">
+              <div className="flex items-end justify-between gap-2 h-32 px-1">
+                {activityDays.map((bar, idx) => {
+                  const isBarActive = selectedActivityDayIdx === idx;
+                  return (
                     <button
+                      key={idx}
                       type="button"
-                      onClick={() => setPdfScale(1.5)}
-                      className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
-                        pdfScale === 1.5 ? 'bg-white text-slate-900 font-bold shadow-2xs' : ''
-                      }`}
+                      onClick={() => {
+                        setSelectedActivityDayIdx(idx);
+                        setCurrentPage(bar.targetPage);
+                      }}
+                      onDoubleClick={() => {
+                        setSelectedActivityDayIdx(idx);
+                        setCurrentPage(bar.targetPage);
+                        setActiveSection('reader');
+                      }}
+                      title={`${bar.dayName}: ${toEasternArabicNumerals(bar.pages)} لاپەر`}
+                      className="relative flex-1 flex flex-col items-center gap-1.5 h-full justify-end cursor-pointer group px-1 py-1.5 rounded-2xl transition-colors"
                     >
-                      بلەز (1.5x)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPdfScale(2)}
-                      className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
-                        pdfScale === 2 ? 'bg-white text-slate-900 font-bold shadow-2xs' : ''
-                      }`}
-                    >
-                      ستاندارد HD (2x)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPdfScale(2.5)}
-                      className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
-                        pdfScale === 2.5 ? 'bg-white text-slate-900 font-bold shadow-2xs' : ''
-                      }`}
-                    >
-                      چاپخانە (2.5x)
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleDownloadRangeWord}
-                    disabled={isGeneratingWord}
-                    className="px-4 py-2.5 text-xs font-bold text-white bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-60 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <FileSpreadsheet className="w-3.5 h-3.5" />
-                    <span>
-                      Word لاپەرێن {toEasternArabicNumerals(pdfRangeStart)}–{toEasternArabicNumerals(pdfRangeEnd)}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDownloadRangePdf}
-                    disabled={isGeneratingPdf}
-                    className="px-4 py-2.5 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>
-                      PDF لاپەرێن {toEasternArabicNumerals(pdfRangeStart)}–{toEasternArabicNumerals(pdfRangeEnd)}
-                    </span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* If user has already generated files in this session, show compact ready-to-save list */}
-            {preparedFiles.length > 0 && (
-              <div className="pt-2 border-t border-slate-100 space-y-2.5">
-                <div className="text-xs font-bold text-slate-700">
-                  فایلێن ئامادەکری بۆ سەیڤکرنێ ({toEasternArabicNumerals(preparedFiles.length)}):
-                </div>
-                {preparedFiles.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
+                      {isBarActive && (
+                        <motion.div
+                          layoutId="activeActivityBarHighlight"
+                          transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                          className="absolute inset-0 rounded-2xl bg-white/[0.14] border border-white/20 shadow-[0_8px_20px_rgba(0,0,0,0.22)] pointer-events-none"
+                        />
+                      )}
+                      <div className="relative z-10 w-full flex-1 bg-white/10 rounded-full p-0.5 flex items-end overflow-hidden border border-white/15">
+                        <motion.div
+                          initial={false}
+                          animate={{ height: `${bar.pct}%` }}
+                          transition={{ type: 'spring', stiffness: 300, damping: 26 }}
+                          className={`w-full rounded-full transition-colors duration-300 ${
+                            isBarActive
+                              ? 'bg-gradient-to-t from-sky-300 via-sky-200 to-white shadow-[0_0_18px_rgba(191,219,254,0.95)]'
+                              : 'bg-gradient-to-t from-blue-400/45 to-blue-200/75 group-hover:from-blue-300/70 group-hover:to-white/90'
+                          }`}
+                        />
+                      </div>
                       <span
-                        className={`px-2.5 py-1 rounded-md text-[10px] font-bold text-white shrink-0 ${
-                          item.format === 'word' ? 'bg-[#2563EB]' : 'bg-[#DC2626]'
+                        className={`relative z-10 text-[10px] font-heading font-bold transition-colors ${
+                          isBarActive ? 'text-white' : 'text-blue-100/65 group-hover:text-white'
                         }`}
                       >
-                        {item.format === 'word' ? 'WORD' : 'PDF'}
+                        {bar.label}
                       </span>
-                      <span className="text-xs font-bold text-slate-900 truncate">
-                        {item.bookTitle}
-                      </span>
-                      <span className="text-[11px] text-slate-500 shrink-0">
-                        ({toEasternArabicNumerals(item.pageCount)} لاپەر)
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <a
-                        href={item.serverDownloadUrl || item.blobUrl}
-                        download={item.fileName}
-                        onClick={() => handleDirectTriggerSave(item)}
-                        className="px-3.5 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>سەیڤکرن</span>
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => handleNativeSharePreparedFile(item)}
-                        className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Share2 className="w-3.5 h-3.5" />
-                        <span>ناردن / فایلێن مۆبایلێ</span>
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
-            )}
-          </div>
-        </main>
-      )}
+            </div>
+          </motion.div>
 
-      {/* =====================================================================
-          DEDICATED 3D MOBILE & DESKTOP READY-TO-SAVE MODAL ("جهێ تایبەت یێ سەیڤکرنا فایلا PDF / Word")
-         ===================================================================== */}
-      {activePreparedFile && (
-        <div className="no-print fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
-          <div className="bg-[#FAFBFD] border-2 border-white rounded-[32px] max-w-md w-full p-5 sm:p-7 space-y-5 shadow-[0_28px_65px_-12px_rgba(15,23,42,0.32),0_10px_25px_rgba(15,23,42,0.12),inset_0_2px_4px_rgba(255,255,255,1)] animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-12 h-12 rounded-full text-white flex items-center justify-center shrink-0 shadow-[0_10px_20px_-4px_rgba(15,23,42,0.3),inset_0_2px_3px_rgba(255,255,255,0.4)] ${
-                    activePreparedFile.format === 'word' ? 'bg-[#1E40AF]' : 'bg-[#EF233C]'
-                  }`}
+          {/* BOTTOM CARD: Floating Dark/Warm 3D Widget Card (.glass-card-dark) — Library Widget */}
+          <motion.div
+            whileHover={{ y: -4 }}
+            transition={{ type: 'spring', stiffness: 360, damping: 28 }}
+            className="glass-card-dark flex-1 p-5 flex flex-col justify-between gap-4 overflow-hidden"
+          >
+            {/* Quick Book Switcher inside Bottom Card */}
+            <div className="space-y-2 flex-1 flex flex-col min-h-0">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-heading font-bold text-blue-100/85 flex items-center gap-1.5">
+                  <Library className="w-3.5 h-3.5 text-blue-300" />
+                  <span>پەرتووکخانەیا تە ({toEasternArabicNumerals(allBooks.length)})</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('library')}
+                  className="text-blue-300 hover:text-white font-heading font-bold cursor-pointer flex items-center gap-0.5"
                 >
-                  {activePreparedFile.format === 'word' ? (
-                    <FileSpreadsheet className="w-6 h-6" />
-                  ) : (
-                    <FileText className="w-6 h-6" />
-                  )}
-                </div>
-                <div>
-                  <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 mb-1">
-                    ✓ فایل ب تەمامی ئامادەیە بۆ سەیڤکرنێ
-                  </span>
-                  <h3 className="text-base sm:text-lg font-extrabold text-stone-900">
-                    جهێ سەیڤکرنا فایلێ د مۆبایلێ دا
-                  </h3>
-                </div>
+                  <span>هەمی</span>
+                  <ArrowUpRight className="w-3 h-3" />
+                </button>
               </div>
+
+              <div className="space-y-1.5 overflow-y-auto dark-scrollbar pr-0.5 max-h-[150px]">
+                {allBooks.map((book) => {
+                  const isSelected = book.id === activeBookId;
+                  return (
+                    <button
+                      key={book.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveBookId(book.id);
+                        setCurrentPage(1);
+                        setActiveSection('reader');
+                      }}
+                      className={`w-full text-right px-3 py-2 rounded-2xl border transition-all flex items-center justify-between gap-2 cursor-pointer ${
+                        isSelected
+                          ? 'bg-blue-500/20 border-blue-400/50 text-white shadow-sm'
+                          : 'bg-black/30 border-white/10 hover:bg-black/45 text-white/80 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-[11px] font-heading font-bold truncate">
+                        {book.title}
+                      </span>
+                      <span className="text-[10px] text-blue-200/85 font-bold tabular-nums shrink-0">
+                        {toEasternArabicNumerals(book.pages.length)} لاپەر
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════
+          INLINE PAGE EDITOR MODAL — VisionOS Dark Frosted Glass Modal
+         ═══════════════════════════════════════════════════════════════ */}
+      {editingPageNumber !== null && currentPageData && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 backdrop-blur-[3.6px] overflow-y-auto p-4">
+          <div className="glass-card w-full max-w-3xl p-5 sm:p-7 space-y-4 my-8 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-white/12">
+              <h2 className="font-heading font-bold text-white text-sm flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-blue-300" />
+                دەستکاریکرنا لاپەرێ {toEasternArabicNumerals(editingPageNumber)}
+              </h2>
               <button
                 type="button"
-                onClick={() => setActivePreparedFile(null)}
-                className="w-9 h-9 rounded-full bg-[#EEF0F5] hover:bg-stone-200 text-stone-700 flex items-center justify-center shadow-[0_4px_10px_rgba(15,23,42,0.07),inset_0_1.5px_2px_rgba(255,255,255,1)] cursor-pointer"
-                aria-label="داخستن"
+                onClick={() => {
+                  setEditingPageNumber(null);
+                  setEditorStatusBanner(null);
+                }}
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white/70 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* File Card Details */}
-            <div className="p-4 rounded-[22px] bg-[#EEF0F5] border border-white space-y-1.5 shadow-[inset_0_2px_4px_rgba(15,23,42,0.06)]">
-              <div className="text-sm font-bold text-stone-900">{activePreparedFile.bookTitle}</div>
-              <div dir="ltr" className="text-xs font-mono text-stone-600 break-all">
-                {activePreparedFile.fileName}
-              </div>
-              <div className="flex items-center gap-3 text-[11px] font-semibold text-stone-500 pt-1">
-                <span>جۆر: {activePreparedFile.format === 'word' ? 'Microsoft Word (.doc)' : 'PDF (.pdf)'}</span>
-                <span>•</span>
-                <span>{toEasternArabicNumerals(activePreparedFile.pageCount)} لاپەر</span>
-                <span>•</span>
-                <span dir="ltr">{(activePreparedFile.sizeBytes / (1024 * 1024)).toFixed(2)} MB</span>
-              </div>
-            </div>
-
-            <div className="space-y-2.5">
-              {/* Option 1: Direct Synchronous Anchor Download via Server Vault */}
-              <a
-                href={activePreparedFile.serverDownloadUrl || activePreparedFile.blobUrl}
-                download={activePreparedFile.fileName}
-                onClick={() => handleDirectTriggerSave(activePreparedFile)}
-                className="w-full py-3.5 px-5 rounded-full text-xs sm:text-sm font-extrabold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] transition-all shadow-[0_10px_24px_-4px_rgba(5,150,105,0.5),inset_0_2px_3px_rgba(255,255,255,0.4)] flex items-center justify-center gap-2.5 cursor-pointer"
-              >
-                <Download className="w-4 h-4 shrink-0" />
-                <span>١. سەیڤکرنا فایلێ د ناڤ مۆبایلێ / ئامێری دا</span>
-              </a>
-
-              {/* Option 2: Native Mobile Share / Save to Files Sheet */}
+            {/* Find & Replace */}
+            <div className="flex flex-wrap items-center gap-2 p-3.5 rounded-2xl bg-black/35 border border-white/12">
+              <Search className="w-4 h-4 text-white/60 shrink-0" />
+              <input
+                type="text"
+                value={editorFindText}
+                onChange={(e) => setEditorFindText(e.target.value)}
+                placeholder="گەرانا پەیڤێ..."
+                className="flex-1 min-w-0 px-3 py-1.5 text-xs bg-black/40 border border-white/15 rounded-full text-white placeholder:text-white/40 focus:outline-none focus:border-blue-400"
+              />
+              <input
+                type="text"
+                value={editorReplaceText}
+                onChange={(e) => setEditorReplaceText(e.target.value)}
+                placeholder="دانانا ب شوونا وێ..."
+                className="flex-1 min-w-0 px-3 py-1.5 text-xs bg-black/40 border border-white/15 rounded-full text-white placeholder:text-white/40 focus:outline-none focus:border-blue-400"
+              />
               <button
                 type="button"
-                onClick={() => handleNativeSharePreparedFile(activePreparedFile)}
-                className="w-full py-3.5 px-5 rounded-full text-xs sm:text-sm font-bold text-white bg-[#0F0F12] hover:bg-stone-800 active:scale-[0.99] transition-all shadow-[0_10px_22px_-4px_rgba(15,15,18,0.4),inset_0_2px_2px_rgba(255,255,255,0.22)] flex items-center justify-center gap-2.5 cursor-pointer"
+                onClick={() => handleFindAndReplace('page', editingPageNumber)}
+                disabled={!editorFindText.trim()}
+                className="px-3.5 py-1.5 rounded-full text-[11px] font-heading font-bold bg-gradient-to-r from-blue-500 to-blue-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-40"
               >
-                <Share2 className="w-4 h-4 shrink-0" />
-                <span>٢. پاشەکەفتکرن د ناڤ فایلێن مۆبایلێ دا (Save to Files)</span>
+                ل ڤی لاپەرێ
               </button>
-
-              {/* Option 3: Open in New Browser Tab */}
-              <a
-                href={activePreparedFile.serverDownloadUrl || activePreparedFile.blobUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full py-3 px-4 rounded-full text-xs font-bold text-stone-800 bg-white hover:bg-stone-50 border border-stone-200/80 shadow-[0_6px_14px_rgba(15,23,42,0.06),inset_0_1.5px_2px_rgba(255,255,255,1)] flex items-center justify-center gap-2 cursor-pointer"
+              <button
+                type="button"
+                onClick={() => handleFindAndReplace('book', editingPageNumber)}
+                disabled={!editorFindText.trim()}
+                className="px-3.5 py-1.5 rounded-full text-[11px] font-heading font-bold bg-white/10 text-white hover:bg-white/20 cursor-pointer disabled:opacity-40 border border-white/15"
               >
-                <ExternalLink className="w-4 h-4 text-stone-600 shrink-0" />
-                <span>٣. ڤەکرنا فایلێ د پەنجەرەکا نوی دا</span>
-              </a>
+                هەمان پەرتووکێ
+              </button>
             </div>
-
-            <p className="text-[11px] text-stone-500 text-center leading-relaxed">
-              ل سەر مۆبایلێ (ئایفۆن یان ئەندرۆید)، کلیک ل سەر دوگمەیا ١ یان ٢ بکە دا کو فایل راستەوخۆ د ناڤ مۆبایلا تە دا سەیڤ ببیت.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* =====================================================================
-          FULL-FEATURED PAGE EDITOR MODAL WITH LIVE SIDE-BY-SIDE PREVIEW
-         ===================================================================== */}
-      {editingPageObj && (
-        <div className="no-print fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
-          <div className="bg-[#FFFDF9] border border-[#E5DEC9] rounded-2xl max-w-6xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
-            {/* Top Modal Bar: Title + Page Navigation + Reset + Close */}
-            <div className="px-4 sm:px-6 py-3.5 bg-stone-900 text-white flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <Edit3 className="w-4 h-4 text-amber-400 shrink-0" />
-                <div>
-                  <h3 className="text-sm sm:text-base font-bold">
-                    بەشێ دەستکاری و راستڤەکرنا لاپەرێ{' '}
-                    {toEasternArabicNumerals(editingPageObj.pageNumber)}
-                  </h3>
-                  <p className="text-[11px] text-stone-300">
-                    هەر گوهۆڕینەکا تو بکەی راستەوخۆ دهێتە پاراستن و د فایلا PDF دا دەردکەڤیت
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Page Switcher inside Modal */}
-                <div className="flex items-center gap-1 bg-stone-800 px-2.5 py-1 rounded-xl text-xs">
-                  <button
-                    type="button"
-                    disabled={editingPageObj.pageNumber <= 1}
-                    onClick={() => {
-                      const prevP = Math.max(1, editingPageObj.pageNumber - 1);
-                      setEditingPageNumber(prevP);
-                      setCurrentPage(prevP);
-                    }}
-                    className="p-1 text-stone-300 hover:text-white disabled:opacity-40 cursor-pointer"
-                    title="لاپەرێ بەرێ"
-                  >
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                  <span className="text-stone-300">لاپەر</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={maxPageCount}
-                    value={editingPageObj.pageNumber}
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      if (val >= 1 && val <= maxPageCount) {
-                        setEditingPageNumber(val);
-                        setCurrentPage(val);
-                      }
-                    }}
-                    className="w-12 text-center font-bold bg-stone-900 text-white border border-stone-700 rounded py-0.5 tabular-nums"
-                  />
-                  <span className="text-stone-400">
-                    ژ {toEasternArabicNumerals(maxPageCount)}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={editingPageObj.pageNumber >= maxPageCount}
-                    onClick={() => {
-                      const nextP = Math.min(maxPageCount, editingPageObj.pageNumber + 1);
-                      setEditingPageNumber(nextP);
-                      setCurrentPage(nextP);
-                    }}
-                    className="p-1 text-stone-300 hover:text-white disabled:opacity-40 cursor-pointer"
-                    title="لاپەرێ پاشتر"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                {activeBook.isBuiltIn && (
-                  <button
-                    type="button"
-                    onClick={() => handleResetPageToOriginal(editingPageObj.pageNumber)}
-                    className="px-2.5 py-1.5 text-[11px] bg-stone-800 hover:bg-stone-700 text-stone-200 rounded-xl flex items-center gap-1 cursor-pointer"
-                    title="زڤڕاندنا ڤی لاپەری بۆ نڤیسینا دەستپێکێ"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>زڤڕاندن بۆ ئەسڵی</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setEditingPageNumber(null)}
-                  className="p-1.5 text-stone-300 hover:text-white rounded-lg hover:bg-stone-800 cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Manual Find & Replace Bar + Add Block/Footnote Buttons inside Manual Editor Modal */}
-            <div className="px-4 sm:px-6 py-2.5 bg-[#FAF8F3] border-b border-[#E5DEC9] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-              {/* Instant Manual Find & Replace */}
-              <div className="flex-1 flex flex-wrap items-center gap-1.5">
-                <input
-                  type="text"
-                  value={editorFindText}
-                  onChange={(e) => setEditorFindText(e.target.value)}
-                  placeholder="پەیڤا خەلەت بنڤیسە..."
-                  className="w-36 sm:w-44 px-3 py-1.5 text-xs bg-white border border-[#DED6C3] rounded-xl focus:outline-none focus:border-blue-600"
-                />
-                <input
-                  type="text"
-                  value={editorReplaceText}
-                  onChange={(e) => setEditorReplaceText(e.target.value)}
-                  placeholder="پەیڤا دروست بنڤیسە..."
-                  className="w-36 sm:w-44 px-3 py-1.5 text-xs bg-white border border-[#DED6C3] rounded-xl focus:outline-none focus:border-blue-600"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleFindAndReplace('page', editingPageObj.pageNumber)}
-                  className="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl cursor-pointer shrink-0"
-                >
-                  ل ڤی لاپەری بگوهۆڕە
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleFindAndReplace('book', editingPageObj.pageNumber)}
-                  className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-[#DED6C3] rounded-xl cursor-pointer shrink-0"
-                >
-                  ل هەمی پەرتووکێ بگوهۆڕە
-                </button>
-              </div>
-
-              {/* Add Block / Footnote Buttons */}
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => handleAddBlockToPage(editingPageObj.pageNumber, 'paragraph')}
-                  className="px-2.5 py-1.5 text-xs font-semibold text-white bg-stone-900 hover:bg-stone-800 rounded-xl cursor-pointer"
-                >
-                  + پەرەگراف
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleAddBlockToPage(editingPageObj.pageNumber, 'heading')}
-                  className="px-2.5 py-1.5 text-xs font-semibold text-white bg-[#9A3412] hover:bg-[#7C2D12] rounded-xl cursor-pointer"
-                >
-                  + سەردێڕ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleAddFootnoteToPage(editingPageObj.pageNumber)}
-                  className="px-2.5 py-1.5 text-xs font-semibold text-stone-800 bg-white hover:bg-stone-100 border border-[#DED6C3] rounded-xl cursor-pointer"
-                >
-                  + پەراوێز
-                </button>
-              </div>
-            </div>
-
-            {aiError && (
-              <div className="px-6 py-2 bg-red-50 text-red-800 text-xs border-b border-red-200 flex items-center justify-between">
-                <span>{aiError}</span>
-                <button
-                  type="button"
-                  onClick={() => setAiError(null)}
-                  className="text-red-600 underline text-[11px] cursor-pointer"
-                >
-                  داخستن
-                </button>
-              </div>
-            )}
 
             {editorStatusBanner && (
-              <div className="px-6 py-2 bg-emerald-50 text-emerald-900 text-xs border-b border-emerald-200 flex items-center justify-between">
-                <span className="font-semibold">✓ {editorStatusBanner}</span>
-                <button
-                  type="button"
-                  onClick={() => setEditorStatusBanner(null)}
-                  className="text-emerald-700 underline text-[11px] cursor-pointer"
-                >
-                  داخستن
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/30">
+                <span className="text-[11px] font-heading font-bold text-emerald-400">{editorStatusBanner}</span>
+                <button type="button" onClick={() => setEditorStatusBanner(null)} className="text-white/60 hover:text-white cursor-pointer">
+                  <X className="w-3 h-3" />
                 </button>
               </div>
             )}
 
-            {/* Main 2-Column Body: Block Editors + Live Page Preview */}
-            <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-12 gap-5 p-4 sm:p-6">
-              {/* Column 1: Block-by-Block Editor (7 cols on desktop) */}
-              <div className="lg:col-span-7 space-y-4">
-                {editingPageObj.blocks.map((block, bIdx) => {
-                  if (block.type === 'cover') {
-                    return (
-                      <div
-                        key={bIdx}
-                        className="space-y-3 bg-[#FAF8F3] p-4 rounded-xl border border-[#DED6C3]"
-                      >
-                        <div className="text-xs font-bold text-[#9A3412]">
-                          دەستکاریکرنا بەرگێ پەرتووکێ (لاپەرێ ١)
-                        </div>
-                        <div className="grid grid-cols-1 gap-3 text-xs">
-                          <div>
-                            <label className="block font-semibold text-stone-700 mb-1">
-                              دەستپێکا سەری (Kicker):
-                            </label>
-                            <input
-                              type="text"
-                              value={block.kicker}
-                              onChange={(e) =>
-                                updateCoverField(
-                                  editingPageObj.pageNumber,
-                                  bIdx,
-                                  'kicker',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl text-sm"
-                            />
-                          </div>
-                          <div>
-                            <label className="block font-semibold text-stone-700 mb-1">
-                              ناڤونیشانێ سەرەکی یێ پەرتووکێ (هەر دێڕەک ل سەر خەتەکی):
-                            </label>
-                            <textarea
-                              rows={3}
-                              value={block.titleLines.join('\n')}
-                              onChange={(e) =>
-                                updateCoverField(
-                                  editingPageObj.pageNumber,
-                                  bIdx,
-                                  'titleLines',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl text-base font-bold text-[#CC0000]"
-                            />
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                              <label className="block font-semibold text-stone-700 mb-1">
-                                ناڤونیشانێ شڕۆڤەکار / دانەری:
-                              </label>
-                              <input
-                                type="text"
-                                value={block.compilerLabel || ''}
-                                onChange={(e) =>
-                                  updateCoverField(
-                                    editingPageObj.pageNumber,
-                                    bIdx,
-                                    'compilerLabel',
-                                    e.target.value
-                                  )
-                                }
-                                className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
-                              />
-                            </div>
-                            <div>
-                              <label className="block font-semibold text-stone-700 mb-1">
-                                ناڤێ مامۆستای / دانەری:
-                              </label>
-                              <input
-                                type="text"
-                                value={block.compilerName || ''}
-                                onChange={(e) =>
-                                  updateCoverField(
-                                    editingPageObj.pageNumber,
-                                    bIdx,
-                                    'compilerName',
-                                    e.target.value
-                                  )
-                                }
-                                className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
-                              />
-                            </div>
-                          </div>
-                          <div>
-                            <label className="block font-semibold text-stone-700 mb-1">
-                              ئایەت یان دوعایا خوارێ یا بەرگی:
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={block.verse}
-                              onChange={(e) =>
-                                updateCoverField(
-                                  editingPageObj.pageNumber,
-                                  bIdx,
-                                  'verse',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
-                            />
-                          </div>
-                          <div>
-                            <label className="block font-semibold text-stone-700 mb-1">
-                              ژێدەر یان تێبینیا خوارێ یا بەرگی:
-                            </label>
-                            <input
-                              type="text"
-                              value={block.verseRef}
-                              onChange={(e) =>
-                                updateCoverField(
-                                  editingPageObj.pageNumber,
-                                  bIdx,
-                                  'verseRef',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }
+            {aiError && (
+              <div className="p-2.5 rounded-xl bg-red-500/20 border border-red-400/30 text-red-200 text-[11px]">{aiError}</div>
+            )}
 
-                  if (block.type !== 'paragraph' && block.type !== 'heading') {
-                    return null;
-                  }
-
-                  return (
-                    <div
-                      key={bIdx}
-                      className="space-y-2.5 bg-[#FAF8F3] p-4 rounded-xl border border-[#DED6C3]"
-                    >
-                      {/* Block Toolbar */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-bold text-stone-800">
-                            {block.type === 'heading'
-                              ? `سەردێڕ (بلۆک ${toEasternArabicNumerals(bIdx + 1)})`
-                              : `پەرەگراف ${toEasternArabicNumerals(bIdx + 1)}`}
-                          </span>
-
-                          <button
-                            type="button"
-                            onClick={() => handleToggleBlockType(editingPageObj.pageNumber, bIdx)}
-                            className="px-2 py-0.5 text-[11px] bg-white hover:bg-stone-100 border border-stone-300 rounded-md cursor-pointer"
-                          >
-                            بکە {block.type === 'heading' ? 'پەرەگراف' : 'سەردێڕ'}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleChangeBlockColor(
-                                editingPageObj.pageNumber,
-                                bIdx,
-                                block.color === 'red' ? 'black' : 'red'
-                              )
-                            }
-                            className={`px-2 py-0.5 text-[11px] rounded-md border font-semibold cursor-pointer ${
-                              block.color === 'red' || block.type === 'heading'
-                                ? 'bg-red-50 text-[#CC0000] border-red-200'
-                                : 'bg-white text-stone-700 border-stone-300'
-                            }`}
-                          >
-                            رەنگ: {block.color === 'red' ? 'سۆر / سەرەکی' : 'ئاسایی'}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleInsertTagInBlock(editingPageObj.pageNumber, bIdx, 'red')
-                            }
-                            className="px-2 py-0.5 text-[11px] bg-red-50 hover:bg-red-100 text-[#CC0000] border border-red-200 rounded-md font-semibold cursor-pointer"
-                            title="نڤیسینا د ناڤ {{r:...}} دا ب رەنگێ دووێ دەردکەڤیت"
-                          >
-                            + پەیڤا رەنگدار {'{{r:...}}'}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleInsertTagInBlock(editingPageObj.pageNumber, bIdx, 'quran')
-                            }
-                            className="px-2 py-0.5 text-[11px] bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-md font-semibold cursor-pointer"
-                          >
-                            + ئایەت ﴿...﴾
-                          </button>
-                        </div>
-
-                        {/* Reorder/Delete Buttons */}
-                        <div className="flex flex-wrap items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleMoveBlockInPage(editingPageObj.pageNumber, bIdx, 'up')
-                            }
-                            className="px-2 py-1 text-xs bg-white hover:bg-stone-100 border border-stone-300 rounded-md cursor-pointer"
-                            title="برنا سەری"
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleMoveBlockInPage(editingPageObj.pageNumber, bIdx, 'down')
-                            }
-                            className="px-2 py-1 text-xs bg-white hover:bg-stone-100 border border-stone-300 rounded-md cursor-pointer"
-                            title="ئینانا خوارێ"
-                          >
-                            ↓
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleDeleteBlockFromPage(editingPageObj.pageNumber, bIdx)
-                            }
-                            className="p-1 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-md cursor-pointer"
-                            title="ژێبرنا ڤی بلۆکی"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      <textarea
-                        rows={block.type === 'heading' ? 2 : 5}
-                        value={block.text}
-                        style={{ fontFamily: activeBookFont.cssFamily }}
-                        onChange={(e) =>
-                          updateBlockText(editingPageObj.pageNumber, bIdx, e.target.value)
-                        }
-                        className="w-full p-3 text-base font-book bg-white border border-stone-300 rounded-xl focus:outline-none focus:border-blue-600 leading-relaxed"
-                      />
-                    </div>
-                  );
-                })}
-
-                {editingPageObj.footnotes && editingPageObj.footnotes.length > 0 && (
-                  <div className="space-y-3 pt-3 border-t border-[#E5DEC9]">
-                    <div className="text-xs font-bold text-stone-800">پەراوێزێن لاپەری (هامش):</div>
-                    {editingPageObj.footnotes.map((fn, fnIdx) => (
-                      <div key={fnIdx} className="flex items-start gap-2">
-                        <textarea
-                          rows={2}
-                          value={fn}
-                          style={{ fontFamily: activeBookFont.cssFamily }}
-                          onChange={(e) =>
-                            updateFootnoteText(editingPageObj.pageNumber, fnIdx, e.target.value)
-                          }
-                          className="flex-1 p-3 text-sm font-book bg-white border border-stone-300 rounded-xl focus:outline-none focus:border-blue-600 leading-relaxed"
-                        />
+            {/* Block-by-Block Editor */}
+            <div className="space-y-3 max-h-[55vh] overflow-y-auto dark-scrollbar">
+              {currentPageData.blocks.map((block, blockIdx) => {
+                const text =
+                  block.type === 'heading'
+                    ? block.text
+                    : block.type === 'paragraph'
+                    ? block.text
+                    : block.type === 'cover'
+                    ? [block.kicker, ...(block.titleLines || []), block.verse].filter(Boolean).join('\n')
+                    : '';
+                if (!text) return null;
+                return (
+                  <div key={blockIdx} className="space-y-2 p-3.5 rounded-2xl bg-black/35 border border-white/12">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-heading font-bold text-white/60">
+                        بلۆکێ {toEasternArabicNumerals(blockIdx + 1)} — {block.type === 'heading' ? 'سەردێڕ' : 'پەرەگراف'}
+                      </span>
+                      <div className="flex items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() =>
-                            handleDeleteFootnoteFromPage(editingPageObj.pageNumber, fnIdx)
-                          }
-                          className="p-2 text-stone-400 hover:text-red-600 rounded-lg hover:bg-red-50 cursor-pointer shrink-0"
-                          title="ژێبرنا پەراوێزێ"
+                          disabled={aiRefiningIdx === blockIdx}
+                          onClick={() => handleAiRefineBlock(editingPageNumber, blockIdx, text, 'spelling')}
+                          className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-gradient-to-r from-blue-500 to-blue-600 text-white hover:brightness-110 cursor-pointer disabled:opacity-50"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          {aiRefiningIdx === blockIdx && aiRefiningMode === 'spelling' ? (
+                            <RefreshCw className="w-3 h-3 animate-spin inline" />
+                          ) : (
+                            'ڕاستکرنەوەی ڕێنڤیسین'
+                          )}
                         </button>
+                        <button
+                          type="button"
+                          disabled={aiRefiningIdx === blockIdx}
+                          onClick={() => handleAiRefineBlock(editingPageNumber, blockIdx, text, 'fluent')}
+                          className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-white/10 text-white border border-white/15 hover:bg-white/20 cursor-pointer disabled:opacity-50"
+                        >
+                          {aiRefiningIdx === blockIdx && aiRefiningMode === 'fluent' ? (
+                            <RefreshCw className="w-3 h-3 animate-spin inline" />
+                          ) : (
+                            'ڕەوانتر'
+                          )}
+                        </button>
+                        {activeBook.isBuiltIn && (
+                          <button
+                            type="button"
+                            onClick={() => handleResetPageToOriginal(editingPageNumber)}
+                            className="px-2 py-1 rounded-full text-[10px] font-bold bg-white/10 text-white/70 border border-white/15 hover:bg-white/20 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3 inline" />
+                          </button>
+                        )}
                       </div>
-                    ))}
+                    </div>
+                    <textarea
+                      value={text}
+                      onChange={(e) => updateBlockText(editingPageNumber, blockIdx, e.target.value)}
+                      rows={Math.min(8, Math.max(2, Math.ceil(text.length / 80)))}
+                      className="w-full px-3.5 py-2.5 text-xs bg-black/40 border border-white/15 rounded-xl text-white focus:outline-none focus:border-blue-400 resize-none font-subtext"
+                      dir="rtl"
+                    />
                   </div>
-                )}
-              </div>
-
-              {/* Column 2: Live Book Page Preview (5 cols on desktop) */}
-              <div className="lg:col-span-5 flex flex-col items-center space-y-2 bg-[#F5F1E8]/60 p-3 rounded-2xl border border-[#E5DEC9]">
-                <div className="text-xs font-bold text-stone-700">
-                  پێشبینینا راستەوخۆ یا لاپەرێ {toEasternArabicNumerals(editingPageObj.pageNumber)}
-                </div>
-                <BookPageSheet
-                  page={editingPageObj}
-                  fontSizePt={fontSizePt}
-                  zoom={0.72}
-                  headerTitle={activeBook.headerTitle}
-                  bookFontFamily={activeBookFont.cssFamily}
-                  design={activeBookDesign}
-                />
-              </div>
-            </div>
-
-            <div className="px-6 py-3 border-t border-[#E5DEC9] flex items-center justify-between gap-3 bg-[#FAF8F3]">
-              <span className="text-xs text-stone-600">
-                ✓ هەمی گوهۆڕین ب شێوەیێ خۆکار د هەمان چرکە دا دهێنە پاراستن
-              </span>
-              <button
-                type="button"
-                onClick={() => setEditingPageNumber(null)}
-                className="px-5 py-2 text-xs font-semibold text-white bg-stone-900 hover:bg-stone-800 rounded-xl transition-colors cursor-pointer"
-              >
-                داخستنا پەنجەرەیا دەستکاریێ
-              </button>
+                );
+              })}
             </div>
           </div>
         </div>
       )}
 
-      {/* Hidden Print-Only All Pages Container for Native Vector Print-to-PDF */}
+      {/* ═══════════════════════════════════════════════════════════════
+          PREPARED FILE SAVE MODAL — VisionOS Dark Frosted Glass Modal
+         ═══════════════════════════════════════════════════════════════ */}
+      {activePreparedFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[3.6px] p-4">
+          <div className="glass-card w-full max-w-md p-5 sm:p-7 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-white/12">
+              <h2 className="font-heading font-bold text-white text-sm flex items-center gap-2">
+                <FolderDown className="w-4 h-4 text-blue-300" />
+                سەیڤکرنا فایلی
+              </h2>
+              <button
+                type="button"
+                onClick={() => setActivePreparedFile(null)}
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white/70 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-black/35 border border-white/12 space-y-2">
+              <div className="text-xs font-heading font-bold text-white">{activePreparedFile.bookTitle}</div>
+              <div className="flex items-center gap-2 text-[11px] text-white/60">
+                <span>{activePreparedFile.fileName}</span>
+                <span>·</span>
+                <span>{toEasternArabicNumerals(activePreparedFile.pageCount)} لاپەر</span>
+                <span>·</span>
+                <span>{toEasternArabicNumerals(Math.round(activePreparedFile.sizeBytes / 1024))} KB</span>
+              </div>
+              <div className="text-[10px] text-emerald-400">{activePreparedFile.createdAtLabel}</div>
+            </div>
+
+            <div className="flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => handleDirectTriggerSave(activePreparedFile)}
+                className="amber-pill text-xs flex items-center justify-center gap-2 w-full cursor-pointer"
+              >
+                <Download className="w-4 h-4 text-white" />
+                داگرتنا فایلی
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleNativeSharePreparedFile(activePreparedFile)}
+                className="w-full px-4 py-2.5 rounded-full text-xs font-heading font-bold bg-white/10 text-white border border-white/15 hover:bg-white/20 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Share2 className="w-4 h-4" />
+                هاوبەشکرن / Save to Files
+              </button>
+              {activePreparedFile.serverDownloadUrl && (
+                <a
+                  href={activePreparedFile.serverDownloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full px-4 py-2.5 rounded-full text-xs font-heading font-bold bg-white/10 text-white border border-white/15 hover:bg-white/20 flex items-center justify-center gap-2"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  لینکا داگرتنا راستەوخۆ
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════
+          PRINT-ONLY: Full Book Pages (Hidden in Screen)
+         ═══════════════════════════════════════════════════════════════ */}
       <div className="hidden print-only-all-pages">
-        {pages.map((p) => (
+        {pages.map((page) => (
           <BookPageSheet
-            key={p.pageNumber}
-            page={p}
+            key={page.pageNumber}
+            page={page}
             fontSizePt={fontSizePt}
             zoom={1}
             headerTitle={activeBook.headerTitle}
@@ -6603,97 +6786,25 @@ export default function BadiniBookTranslatorPage() {
         ))}
       </div>
 
-      {/* Mobile Gliding Pill Bottom Navigation Bar — Touch-Drag / Scrubbing Follow Finger, Switches Section Only on Release */}
-      <div
-        className="no-print md:hidden fixed inset-x-0 z-40 px-5 pointer-events-none"
-        style={{ bottom: 'calc(var(--safe-bottom, 0px) + 12px)' }}
-      >
-        <div className="max-w-sm mx-auto">
-          <nav
-            ref={mobileNavRef}
-            style={{ touchAction: 'none' }}
-            onPointerDown={(e) => {
-              try {
-                e.currentTarget.setPointerCapture(e.pointerId);
-              } catch {
-                // ignore
-              }
-              setIsScrubbingNav(true);
-              const idx = resolveNavIndexAtX(e.clientX);
-              if (idx !== null) setScrubNavIndex(idx);
-            }}
-            onPointerMove={(e) => {
-              if (!isScrubbingNav) return;
-              const idx = resolveNavIndexAtX(e.clientX);
-              if (idx !== null && idx !== scrubNavIndex) {
-                setScrubNavIndex(idx);
-              }
-            }}
-            onPointerUp={(e) => {
-              if (!isScrubbingNav) return;
-              const finalIdx = resolveNavIndexAtX(e.clientX) ?? scrubNavIndex;
-              setIsScrubbingNav(false);
-              setScrubNavIndex(null);
-              if (finalIdx !== null && mainSections[finalIdx]) {
-                setActiveSection(mainSections[finalIdx].id);
-              }
-            }}
-            onPointerCancel={() => {
-              setIsScrubbingNav(false);
-              setScrubNavIndex(null);
-            }}
-            className="pointer-events-auto bg-white/95 backdrop-blur-2xl border border-slate-200/80 rounded-full p-1.5 flex items-center justify-around shadow-[0_16px_40px_rgba(15,23,42,0.14),0_4px_12px_rgba(15,23,42,0.06)] select-none"
-          >
-            {mainSections.map((sec, idx) => {
-              const isCommittedActive =
-                activeSection === sec.id ||
-                (sec.id === 'upload' && activeSection === 'audio');
-              const isHighlighted =
-                isScrubbingNav && scrubNavIndex !== null
-                  ? scrubNavIndex === idx
-                  : isCommittedActive;
-              return (
-                <button
-                  key={sec.id}
-                  type="button"
-                  data-nav-idx={idx}
-                  onClick={() => {
-                    if (!isScrubbingNav) {
-                      setActiveSection(sec.id);
-                    }
-                  }}
-                  aria-label={sec.label}
-                  className={`relative flex-1 h-12 rounded-full flex items-center justify-center transition-colors cursor-pointer select-none ${
-                    isHighlighted
-                      ? 'text-[#0F172A]'
-                      : 'text-slate-400 hover:text-slate-700'
-                  }`}
-                >
-                  {isHighlighted && (
-                    <motion.div
-                      layoutId="mobile-nav-glider"
-                      transition={{
-                        type: 'spring',
-                        stiffness: 460,
-                        damping: 34,
-                        mass: 0.7,
-                      }}
-                      className="absolute inset-0.5 rounded-full bg-slate-100/95 border border-slate-200/80 shadow-2xs"
-                    />
-                  )}
-                  <span
-                    className={`relative z-10 flex items-center justify-center transition-transform duration-150 ${
-                      isHighlighted ? 'scale-110' : 'scale-100'
-                    }`}
-                  >
-                    {sec.icon}
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-      </div>
+      {/* ═══════════════════════════════════════════════════════════════
+          LIQUID GLASS BOTTOM NAVIGATION BAR (Mobile Only)
+         ═══════════════════════════════════════════════════════════════ */}
+      <LiquidGlassNav
+        activeTab={activeSection}
+        onChangeTab={(tabId) => {
+          if (tabId === 'translate' || tabId === 'upload') {
+            setActiveSection('upload');
+          } else if (
+            tabId === 'library' ||
+            tabId === 'reader' ||
+            tabId === 'audio' ||
+            tabId === 'chat' ||
+            tabId === 'export'
+          ) {
+            setActiveSection(tabId);
+          }
+        }}
+      />
     </div>
   );
 }

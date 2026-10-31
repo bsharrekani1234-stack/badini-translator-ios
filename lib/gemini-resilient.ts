@@ -10,14 +10,10 @@ export const aiClient = new GoogleGenAI({
 });
 
 /**
- * Active models verified in this environment, ordered for reliability and independent quota buckets.
- * Rotating across these models prevents 429 daily/minute quota stops and recovers from repetition loops.
+ * Exclusively use gemini-3.8-flash with deep thinking across Book Translation, Audio-to-Book, and Smart Assistant.
  */
 export const RESILIENT_MODELS = [
-  'gemini-3-flash-preview',
-  'gemini-flash-latest',
-  'gemini-3.1-flash-lite-preview',
-  'gemini-flash-lite-latest',
+  'gemini-3.8-flash',
 ] as const;
 
 declare global {
@@ -180,10 +176,10 @@ export function sanitizeErrorMessageKurdish(err: unknown, fallbackMsg: string): 
     raw.includes('quota') ||
     raw.includes('rate-limits')
   ) {
-    return 'لۆدەکا زۆر ل سەر مۆدێلێ ئێکێ هەبوو — سیستەم ب شێوەیێ خۆکار دهێتە گوهۆڕین بۆ مۆدێلێ یەدەک، تکایە چەند چرکەیەکان چاڤەڕێ بکە یان دووبارە کلیک بکە.';
+    return 'لۆدەکا زۆر ل سەر سێرڤەری هەبوو — تکایە چەند چرکەیەکان چاڤەڕێ بکە یان دووبارە کلیک بکە.';
   }
   if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
-    return 'سێرڤەرێ وەرگێرانێ نوکە یێ بژویلە، تکایە دووبارە دوگمەیێ لێبدە.';
+    return 'سێرڤەر نوکە یێ بژویلە، تکایە دووبارە دوگمەیێ لێبدە.';
   }
   if (
     raw.toLowerCase().includes('failed to fetch') ||
@@ -231,26 +227,28 @@ export async function generateContentResilient(
     const modelName = activePool[attempt % activePool.length];
 
     try {
-      const supportsThinkingLevel = modelName === 'gemini-3-flash-preview';
+      const isFlash38 = modelName === 'gemini-3.8-flash';
+      const supportsThinkingLevel = isFlash38 || modelName === 'gemini-3-flash-preview';
       const baseConfig = { ...(params.config || {}) };
 
+      if (isFlash38) {
+        delete baseConfig.temperature;
+        delete baseConfig.topP;
+        delete baseConfig.topK;
+        delete baseConfig.candidateCount;
+      }
+
       if (!baseConfig.maxOutputTokens) {
-        baseConfig.maxOutputTokens = params.fastMode ? 8192 : 32768;
+        baseConfig.maxOutputTokens = 32768;
       }
 
       if (supportsThinkingLevel && !baseConfig.thinkingConfig) {
         baseConfig.thinkingConfig = {
-          thinkingLevel: params.fastMode ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW,
+          thinkingLevel: ThinkingLevel.HIGH,
         };
-      } else if (!supportsThinkingLevel) {
-        if (params.fastMode) {
-          baseConfig.thinkingConfig = { thinkingBudget: 0 };
-        } else if (baseConfig.thinkingConfig) {
-          delete baseConfig.thinkingConfig;
-        }
       }
 
-      const perAttemptTimeoutMs = params.fastMode ? 22000 : 38000;
+      const perAttemptTimeoutMs = 65000;
       const response = await Promise.race([
         aiClient.models.generateContent({
           ...params,

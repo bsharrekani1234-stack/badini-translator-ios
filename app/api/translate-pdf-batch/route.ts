@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Type } from '@google/genai';
+import { ThinkingLevel, Type } from '@google/genai';
 import {
   generateContentResilient,
   parseOrRepairJson,
@@ -35,6 +35,7 @@ export async function POST(req: NextRequest) {
 
     const response = await generateContentResilient(
       {
+        preferredModels: ['gemini-3.8-flash'],
         contents: {
           parts: [
             {
@@ -46,12 +47,16 @@ export async function POST(req: NextRequest) {
             {
               text: `لاپەرێن (${pageNumbers.join(
                 ', '
-              )}) ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
+              )}) ب هویربینی و هزرکرنەکا قووڵ ب وەرگێرانەکا بادینی یا تەحقیقکری و رەوان وەرگێرە ب پاراستنا هەمان دیزاین، و ئایەتێن قورئانێ د ناڤ ﴿ ... ﴾ دا ب عەرەبی بهێلە بێی تەفسیر ل بن وان.`,
             },
           ],
         },
         config: {
           systemInstruction,
+          maxOutputTokens: 32768,
+          thinkingConfig: {
+            thinkingLevel: ThinkingLevel.HIGH,
+          },
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
