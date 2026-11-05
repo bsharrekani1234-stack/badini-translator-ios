@@ -30,7 +30,6 @@
 
   html,
   body {
-    /* Default base uses the Soft Classic Font (فۆنتێ کلاسیکێ نەرم: Noto Naskh Arabic + Amiri) with generous line spacing */
     font-family: var(--font-noto-naskh), var(--font-amiri), serif;
     letter-spacing: 0px !important;
     word-spacing: 0.03em;
@@ -39,14 +38,12 @@
     text-rendering: optimizeLegibility;
   }
 
-  /* High-resolution warm modern interior backdrop for VisionOS floating windows */
   body {
     background-color: #0e0d0c;
     color: #FFFFFF;
     min-height: 100vh;
   }
 
-  /* Font 1: Main headings, top lines, titles, and primary action buttons use Noto Kufi Arabic */
   h1,
   h2,
   h3,
@@ -60,7 +57,6 @@
     line-height: 1.95 !important;
   }
 
-  /* Font 2: Subtext, descriptions, multi-line body text, chat messages, inputs, selects, and options */
   p,
   input,
   select,
@@ -81,7 +77,6 @@
   }
 }
 
-/* Ensure Tailwind text-* utilities never collapse line-height when Kurdish/Arabic text wraps into 2+ lines */
 [dir="rtl"] h1,
 [dir="rtl"] h2,
 [dir="rtl"] h3,
@@ -96,7 +91,6 @@
   line-height: 2.05 !important;
 }
 
-/* Prevent negative letter-spacing from cramping Arabic/Kurdish script */
 [dir="rtl"] .tracking-tight,
 [dir="rtl"] .tracking-tighter {
   letter-spacing: 0px !important;
@@ -136,12 +130,10 @@
   }
 }
 
-/* 3D Hinged Book/Workspace Shell (Left Sidebar gently angled toward the left + Main Window) */
 .spatial-book-shell {
   transform-style: preserve-3d;
 }
 
-/* Left Sidebar with a very subtle 3D bend facing toward the right (hinged at its right edge) */
 .glass-sidebar-3d {
   background: linear-gradient(135deg, rgba(38, 34, 30, 0.54) 0%, rgba(18, 16, 15, 0.64) 100%);
   backdrop-filter: blur(3.6px) saturate(150%);
@@ -160,7 +152,6 @@
   transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
-/* Center Main Glass Window — clean, straight, and unclipped */
 .glass-main-panel-3d {
   background: linear-gradient(135deg, rgba(38, 34, 30, 0.52) 0%, rgba(18, 16, 15, 0.62) 100%);
   backdrop-filter: blur(3.6px) saturate(150%);
@@ -189,7 +180,6 @@
   }
 }
 
-/* Legacy fallback classes */
 .glass-main-window {
   background: linear-gradient(135deg, rgba(38, 34, 30, 0.52) 0%, rgba(18, 16, 15, 0.62) 100%);
   backdrop-filter: blur(3.6px) saturate(150%);
@@ -202,14 +192,12 @@
     inset 0 -1px 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-/* Sidebar Divider inside the Main Window */
 .glass-sidebar-area {
   background: rgba(255, 255, 255, 0.02);
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* Inner Cards (Stats, Upload boxes, Inner panels) — 120Hz GPU Composited */
 .glass-inner-card,
 .stat-card {
   background: rgba(255, 255, 255, 0.03);
@@ -231,7 +219,6 @@
   border-color: rgba(255, 255, 255, 0.2);
 }
 
-/* Top Right Sky/Royal Blue 3D Widget Card */
 .glass-card-blue,
 .glass-card-royal-blue {
   background: 
@@ -250,7 +237,6 @@
   transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Floating Dark/Warm 3D Widget Cards */
 .glass-card-dark,
 .glass-card-copper,
 .glass-card,
@@ -280,7 +266,6 @@
   transform: translate3d(0, -4px, 0);
 }
 
-/* Left Floating Spatial Sidebar Window */
 .glass-sidebar,
 .bento-sidebar-rail {
   background: linear-gradient(135deg, rgba(38, 34, 30, 0.52) 0%, rgba(18, 16, 15, 0.62) 100%);
@@ -294,7 +279,6 @@
     inset 0 1.5px 1px 0 rgba(255, 255, 255, 0.28);
 }
 
-/* Primary Glowing Blue Pill Action Button — 120Hz Instant Response */
 .amber-pill {
   background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
   color: #FFFFFF;
@@ -318,7 +302,6 @@
   transform: scale3d(0.97, 0.97, 1);
 }
 
-/* Custom scrollbar for dark glass — 120Hz Momentum Scrolling */
 .dark-scrollbar {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
@@ -383,4 +366,25 @@
     page-break-after: always !important;
     break-after: page !important;
   }
+}
+
+/* قەدەغەکرنا زوومبوونا ئایفۆنێ و شێوازێ ماڵپەڕی */
+html, body {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* قەدەغەکرنا زوومبوونا ئۆتۆماتیکی دەمێ کلیک ل جهێ نڤیسینێ دهێتە کرن ل سەر ئایفۆنێ */
+@media screen and (max-width: 768px) {
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}
+
+/* قەدەغەکرنا زوومبوونا دەبل کلیک ل سەر دوگمەیان */
+button, a, div, span {
+  touch-action: manipulation;
 }
