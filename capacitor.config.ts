@@ -4,7 +4,8 @@ const config = {
   webDir: 'public',
   server: {
     url: 'https://ai-studio-applet-ten.vercel.app',
-    cleartext: true
+    cleartext: true,
+    allowNavigation: ['*']
   }
 };
 

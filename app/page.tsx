@@ -1633,12 +1633,20 @@ export default function BadiniBookTranslatorPage() {
     return uploadId;
   };
 
+<<<<<<< HEAD
   // High-clarity fallback segmentation in browser memory (~1.2MB MP3 or 24000Hz mono 90s WAV segments)
+=======
+  // High-clarity fallback segmentation in browser memory (~2.4MB MP3 or 16000Hz mono WAV segments)
+>>>>>>> 23990a975db985233138afdbfdab0985b5f14143
   const prepareClientAudioSegments = async (
     file: File,
     fileBytes: Uint8Array
   ): Promise<{ bytes: Uint8Array; mimeType: string }[]> => {
+<<<<<<< HEAD
     const TARGET_CHUNK_BYTES = 1200 * 1024; // ~1.2 MB per segment (~90s of speech for focused letter-by-letter accuracy)
+=======
+    const TARGET_CHUNK_BYTES = 2400 * 1024; // ~2.4 MB per segment (~3.5-4.5 minutes of speech for full context)
+>>>>>>> 23990a975db985233138afdbfdab0985b5f14143
     const lowerName = file.name.toLowerCase();
     const isMp3 =
       lowerName.endsWith('.mp3') || file.type === 'audio/mpeg' || file.type === 'audio/mp3';
@@ -1678,7 +1686,11 @@ export default function BadiniBookTranslatorPage() {
       return chunks;
     }
 
+<<<<<<< HEAD
     // For .m4a / .wav / .ogg / .aac, decode via Web Audio API into 90-second 24000Hz mono WAV segments
+=======
+    // For .m4a / .wav / .ogg / .aac, decode via Web Audio API into 120-second 16000Hz mono WAV segments (preserving full Kurdish/Arabic consonant clarity)
+>>>>>>> 23990a975db985233138afdbfdab0985b5f14143
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -1687,9 +1699,15 @@ export default function BadiniBookTranslatorPage() {
         const ctx = new AudioCtx();
         const decoded = await ctx.decodeAudioData(fileBytes.slice().buffer as ArrayBuffer);
         void ctx.close();
+<<<<<<< HEAD
         const targetRate = 24000;
         const totalDuration = decoded.duration;
         const segDuration = 90; // 90 seconds per WAV segment at 24000Hz 16-bit mono
+=======
+        const targetRate = 16000;
+        const totalDuration = decoded.duration;
+        const segDuration = 120; // 120 seconds (2 minutes) per WAV segment at 16000Hz 16-bit mono
+>>>>>>> 23990a975db985233138afdbfdab0985b5f14143
         const numSegs = Math.max(1, Math.ceil(totalDuration / segDuration));
         const srcData = decoded.getChannelData(0);
         const srcRate = decoded.sampleRate;
@@ -2136,7 +2154,11 @@ export default function BadiniBookTranslatorPage() {
         const fileBytes = new Uint8Array(await file.arrayBuffer());
         let returnedPages: BookPageData[] = [];
 
+<<<<<<< HEAD
         // Primary path: Upload original audio to server background worker (24kHz 64kbps studio-clarity 3-minute segments with Two-Stage Deep Badini Authoring + Proofreading)
+=======
+        // Primary path: Upload original audio to server background worker (24kHz 64kbps studio-clarity 5-minute segments with deep thinking & rolling context)
+>>>>>>> 23990a975db985233138afdbfdab0985b5f14143
         try {
           const uploadId = await uploadBufferInChunks(
             '/api/audio-to-book',
@@ -2197,7 +2219,11 @@ export default function BadiniBookTranslatorPage() {
 
           setAudioProgressPercent((prev) => Math.max(prev, 22));
           setAudioConvertStatus(
+<<<<<<< HEAD
             `دەنگ گەهشتە سێرڤەری — گوهداریا دوو-جارکی و نڤیسینا پیت ب پیت دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
+=======
+            `دەنگ گەهشتە سێرڤەری — شلۆڤەکرنا کویر و نڤیسینا زانستی دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
+>>>>>>> 23990a975db985233138afdbfdab0985b5f14143
           );
 
           const startJobObj = startData.job as { id?: string } | undefined;
