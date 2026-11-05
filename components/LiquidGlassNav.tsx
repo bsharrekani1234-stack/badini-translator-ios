@@ -37,26 +37,11 @@ export default function LiquidGlassNav({
 
   if (!mounted) return null;
 
-  // Ordered visually from Left to Right so `glisse` LTR lens physics work 100% accurately
-  // while keeping "وەرگێڕان" on the far right for Kurdish RTL layout!
-  const glisseItems = [
-    { value: "export", label: "ڕێکخستن", icon: <Settings size={16} /> },
-    { value: "chat", label: "شیرەتکار", icon: <Sparkles size={16} /> },
-    { value: "audio", label: "دەنگ", icon: <Headphones size={16} /> },
-    { value: "reader", label: "خویندن", icon: <BookOpen size={16} /> },
-    { value: "library", label: "پەرتووکخانە", icon: <Library size={16} /> },
-    { value: "upload", label: "وەرگێڕان", icon: <Languages size={16} /> },
-  ];
-
   return createPortal(
     <div
       dir="ltr"
-<<<<<<< HEAD
       data-theme="dark"
       className="no-print md:hidden flex justify-center px-1.5 pointer-events-none select-none"
-=======
-      className="no-print md:hidden flex justify-center px-3 pointer-events-none select-none touch-none"
->>>>>>> 23990a975db985233138afdbfdab0985b5f14143
       style={{
         position: "fixed",
         bottom: "calc(12px + env(safe-area-inset-bottom, 0px))",
@@ -67,17 +52,19 @@ export default function LiquidGlassNav({
       }}
     >
       <div
-<<<<<<< HEAD
         className="pointer-events-auto max-w-full"
         style={{ overflow: "visible" }}
-=======
-        dir="ltr"
-        className="pointer-events-auto touch-none flex justify-center w-full max-w-[356px] [&>*]:!max-w-full [&_button]:!min-w-[52px] [&_button]:!px-1 [&_button]:!text-[10px] [&_[role=tab]]:!min-w-[52px] [&_[role=tab]]:!px-1 [&_[role=tab]]:!text-[10px]"
->>>>>>> 23990a975db985233138afdbfdab0985b5f14143
       >
         <TabBar
           aria-label="Navigation"
-          items={glisseItems}
+          items={[
+            { value: "upload", label: "وەرگێڕان", icon: <Languages size={18} /> },
+            { value: "library", label: "پەرتووکخانە", icon: <Library size={18} /> },
+            { value: "reader", label: "خویندن", icon: <BookOpen size={18} /> },
+            { value: "audio", label: "دەنگ", icon: <Headphones size={18} /> },
+            { value: "chat", label: "شیرەتکار", icon: <Sparkles size={18} /> },
+            { value: "export", label: "ڕێکخستن", icon: <Settings size={18} /> },
+          ]}
           value={activeTab}
           onValueChange={onChangeTab}
         />
