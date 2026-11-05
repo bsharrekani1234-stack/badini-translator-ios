@@ -69,7 +69,15 @@ import {
   toEasternArabicNumerals,
 } from '@/lib/book-types';
 import { motion, AnimatePresence } from 'motion/react';
-import { SegmentedControl, Input } from 'glisse';
+import {
+  SegmentedControl,
+  Input,
+  Button as GlisseButton,
+  Switch as GlisseSwitch,
+  Slider as GlisseSlider,
+  Menu as GlisseMenu,
+  Glass as GlisseGlass,
+} from 'glisse';
 import { BookPageSheet } from '@/components/BookPageSheet';
 import LiquidGlassNav from '@/components/LiquidGlassNav';
 import { generateAndDownloadBookPdf } from '@/lib/pdf-generator';
@@ -418,12 +426,12 @@ export default function BadiniBookTranslatorPage() {
     return () => clearInterval(timer);
   }, [isTranslatingUpload]);
 
-  // Estimated total seconds needed for currently selected audio files
+  // Estimated total seconds needed for currently selected audio files (calibrated for Two-Stage Deep Badini Authoring & Proofreading)
   const estimatedAudioTotalSec = useMemo(() => {
     if (selectedAudioFiles.length === 0) return 0;
     return selectedAudioFiles.reduce((acc, f) => {
       const sizeMb = f.size / (1024 * 1024);
-      const est = Math.max(18, Math.min(85, Math.round(sizeMb * 1.4) + 16));
+      const est = Math.max(24, Math.min(240, Math.round(sizeMb * 4.2) + 22));
       return acc + est;
     }, 0);
   }, [selectedAudioFiles]);
@@ -433,19 +441,19 @@ export default function BadiniBookTranslatorPage() {
     const pct = Math.max(1, Math.min(99, audioProgressPercent));
     if (pct >= 100) return 0;
     const remRatio = (100 - pct) / 100;
-    const baseEstRemaining = Math.max(5, Math.round(estimatedAudioTotalSec * remRatio));
-    if (pct >= 10 && audioElapsedSec >= 3) {
+    const baseEstRemaining = Math.max(6, Math.round(estimatedAudioTotalSec * remRatio));
+    if (pct >= 12 && audioElapsedSec >= 4) {
       const rateRemaining = Math.round(((100 - pct) / pct) * audioElapsedSec);
-      const blended = Math.round(rateRemaining * 0.65 + baseEstRemaining * 0.35);
-      return Math.max(4, Math.min(180, blended));
+      const blended = Math.round(rateRemaining * 0.7 + baseEstRemaining * 0.3);
+      return Math.max(5, Math.min(360, blended));
     }
-    return Math.max(5, baseEstRemaining);
+    return Math.max(6, baseEstRemaining);
   }, [audioProgressPercent, audioElapsedSec, estimatedAudioTotalSec]);
 
-  // Estimated total seconds needed for PDF page range before/during translation (~3.5s per page in parallel batches)
+  // Estimated total seconds needed for PDF page range before/during translation (~6s per page with deep thinking)
   const estimatedPdfTotalSec = useMemo(() => {
     const pagesCount = Math.max(1, uploadEndPage - uploadStartPage + 1);
-    return Math.max(12, Math.round(pagesCount * 3.5));
+    return Math.max(16, Math.round(pagesCount * 6));
   }, [uploadStartPage, uploadEndPage]);
 
   // Dynamic remaining seconds during active PDF translation
@@ -454,11 +462,11 @@ export default function BadiniBookTranslatorPage() {
     const { done, total } = uploadProgress;
     const remainingPages = Math.max(0, total - done);
     if (remainingPages === 0) return 0;
-    if (done >= 2 && uploadElapsedSec > 3) {
+    if (done >= 2 && uploadElapsedSec > 4) {
       const secPerPage = uploadElapsedSec / done;
-      return Math.max(4, Math.round(remainingPages * secPerPage));
+      return Math.max(5, Math.round(remainingPages * secPerPage));
     }
-    return Math.max(5, Math.round(total * 3.5) - uploadElapsedSec);
+    return Math.max(6, Math.round(total * 6) - uploadElapsedSec);
   }, [uploadProgress, uploadElapsedSec, estimatedPdfTotalSec]);
 
   // Load saved custom books, default edits, book font, book designs, and sync server-side background translation jobs
@@ -1281,9 +1289,13 @@ export default function BadiniBookTranslatorPage() {
         filename: targetName,
         fontSizePt,
         fontFamily: activeBookFont.canvasFamily,
-        scale: pdfScale,
+        scale: Math.max(2, pdfScale),
         headerTitle,
         design: designToUse,
+        dialect: 'badini-authentic',
+        normalizeKurdishOrthography: true,
+        lineSpacing: designToUse.lineSpacing || 'normal',
+        preserveQuranicBrackets: true,
         skipAutoSave: isMobileDevice,
         onProgress: (current, total) => setPdfProgress({ current, total }),
       });
@@ -1329,6 +1341,10 @@ export default function BadiniBookTranslatorPage() {
         fontFamily: activeBookFont.canvasFamily,
         headerTitle,
         design: designToUse,
+        dialect: 'badini-authentic',
+        normalizeKurdishOrthography: true,
+        lineSpacing: designToUse.lineSpacing || 'normal',
+        preserveQuranicBrackets: true,
       });
 
       await addPreparedDownloadFile({
@@ -1617,13 +1633,12 @@ export default function BadiniBookTranslatorPage() {
     return uploadId;
   };
 
-  // Split MP3 or decode other large audio files in browser memory into compact ~650KB segments so each segment
-  // uploads in <0.4s and transcribes in 3-5s (never choking mobile upload bandwidth or hitting proxy timeouts)
+  // High-clarity fallback segmentation in browser memory (~1.2MB MP3 or 24000Hz mono 90s WAV segments)
   const prepareClientAudioSegments = async (
     file: File,
     fileBytes: Uint8Array
   ): Promise<{ bytes: Uint8Array; mimeType: string }[]> => {
-    const TARGET_CHUNK_BYTES = 650 * 1024; // ~650 KB per segment (~45-60s of speech)
+    const TARGET_CHUNK_BYTES = 1200 * 1024; // ~1.2 MB per segment (~90s of speech for focused letter-by-letter accuracy)
     const lowerName = file.name.toLowerCase();
     const isMp3 =
       lowerName.endsWith('.mp3') || file.type === 'audio/mpeg' || file.type === 'audio/mp3';
@@ -1643,7 +1658,7 @@ export default function BadiniBookTranslatorPage() {
       while (offset < fileBytes.byteLength) {
         let nextEnd = Math.min(fileBytes.byteLength, offset + TARGET_CHUNK_BYTES);
         if (nextEnd < fileBytes.byteLength) {
-          const searchLimit = Math.min(fileBytes.byteLength - 2, nextEnd + 8192);
+          const searchLimit = Math.min(fileBytes.byteLength - 2, nextEnd + 16384);
           for (let pos = nextEnd; pos < searchLimit; pos++) {
             if (fileBytes[pos] === 0xff && (fileBytes[pos + 1] & 0xe0) === 0xe0) {
               nextEnd = pos;
@@ -1663,7 +1678,7 @@ export default function BadiniBookTranslatorPage() {
       return chunks;
     }
 
-    // For .m4a / .wav / .ogg / .aac (> 750 KB), decode via Web Audio API into 55-second 8000Hz mono WAV segments (~880KB each)
+    // For .m4a / .wav / .ogg / .aac, decode via Web Audio API into 90-second 24000Hz mono WAV segments
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -1672,9 +1687,9 @@ export default function BadiniBookTranslatorPage() {
         const ctx = new AudioCtx();
         const decoded = await ctx.decodeAudioData(fileBytes.slice().buffer as ArrayBuffer);
         void ctx.close();
-        const targetRate = 8000;
+        const targetRate = 24000;
         const totalDuration = decoded.duration;
-        const segDuration = 55; // 55 seconds per WAV segment (~880 KB at 8000Hz 16-bit mono)
+        const segDuration = 90; // 90 seconds per WAV segment at 24000Hz 16-bit mono
         const numSegs = Math.max(1, Math.ceil(totalDuration / segDuration));
         const srcData = decoded.getChannelData(0);
         const srcRate = decoded.sampleRate;
@@ -2119,175 +2134,10 @@ export default function BadiniBookTranslatorPage() {
         const effectiveSpeaker = audioSpeakerInput.trim() || 'مامۆستا مەلا رەمەزان';
 
         const fileBytes = new Uint8Array(await file.arrayBuffer());
-        const clientSegments = await prepareClientAudioSegments(file, fileBytes);
-
         let returnedPages: BookPageData[] = [];
 
-        if (clientSegments.length > 0) {
-          const totalSegs = clientSegments.length;
-          const segResults: ({ heading?: string; paragraphs: string[] }[] | null)[] = new Array(
-            totalSegs
-          ).fill(null);
-          let completedSegs = 0;
-
-          setAudioProgressPercent(10);
-          setAudioConvertStatus(
-            `دەنگ هاتە دابەشکرن بۆ ${toEasternArabicNumerals(
-              totalSegs
-            )} پشکێن بلەز — نڤیسین دەستپێکر (${toEasternArabicNumerals(10)}٪)...`
-          );
-
-          const transcribeBufferWithAutoSplit = async (
-            segBytes: Uint8Array,
-            segMime: string,
-            segIdx: number,
-            splitDepth = 0
-          ): Promise<{ heading?: string; paragraphs: string[] }[]> => {
-            let lastErr: unknown = null;
-            const maxDirectAttempts = splitDepth === 0 ? 3 : 5;
-
-            for (let attempt = 0; attempt < maxDirectAttempts; attempt++) {
-              try {
-                let res: Response;
-                if (attempt % 2 === 0) {
-                  const fd = new FormData();
-                  fd.append('action', 'transcribe-segment');
-                  fd.append('chunkIndex', String(segIdx));
-                  fd.append('totalSegments', String(totalSegs));
-                  fd.append('fileName', file.name);
-                  fd.append('mimeType', segMime);
-                  fd.append('bookTitle', effectiveBookTitle);
-                  fd.append('lessonTitle', computedLessonTitle);
-                  fd.append('speakerName', effectiveSpeaker);
-                  fd.append(
-                    'chunk',
-                    new Blob([segBytes.slice().buffer as ArrayBuffer], {
-                      type: segMime,
-                    }),
-                    `seg_${segIdx}.${segMime.includes('wav') ? 'wav' : 'mp3'}`
-                  );
-
-                  res = await fetch('/api/audio-to-book', {
-                    method: 'POST',
-                    body: fd,
-                  });
-                } else {
-                  const chunkBase64 = uint8SliceToBase64(segBytes);
-                  res = await fetch('/api/audio-to-book', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      action: 'transcribe-segment',
-                      chunkIndex: segIdx,
-                      totalSegments: totalSegs,
-                      fileName: file.name,
-                      mimeType: segMime,
-                      bookTitle: effectiveBookTitle,
-                      lessonTitle: computedLessonTitle,
-                      speakerName: effectiveSpeaker,
-                      chunkBase64,
-                    }),
-                  });
-                }
-
-                const parsed = await safeParseJson(res);
-                if (!res.ok || parsed.error || !Array.isArray(parsed.pages)) {
-                  throw new Error(parsed.error || 'شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
-                }
-                return parsed.pages as { heading?: string; paragraphs: string[] }[];
-              } catch (err) {
-                lastErr = err;
-                // Warm up connection / auth cookie before retrying
-                await fetch('/api/audio-to-book?ping=1', { cache: 'no-store' }).catch(() => {});
-                await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-              }
-            }
-
-            // If direct attempts failed and we can split this segment into 2 smaller halves, do so automatically!
-            if (splitDepth < 2 && segBytes.byteLength > 150 * 1024) {
-              const halves = splitClientSegmentInHalf(segBytes, segMime);
-              if (halves.length === 2) {
-                const pagesA = await transcribeBufferWithAutoSplit(
-                  halves[0].bytes,
-                  halves[0].mimeType,
-                  segIdx,
-                  splitDepth + 1
-                );
-                const pagesB = await transcribeBufferWithAutoSplit(
-                  halves[1].bytes,
-                  halves[1].mimeType,
-                  segIdx,
-                  splitDepth + 1
-                );
-                return [...pagesA, ...pagesB];
-              }
-            }
-
-            throw lastErr || new Error('شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
-          };
-
-          // Continuous 3-worker pool with staggered start so upload bandwidth is never saturated
-          let nextSegCursor = 0;
-          const WORKER_COUNT = Math.min(3, totalSegs);
-
-          const runSegmentWorker = async (workerId: number) => {
-            if (workerId > 0) {
-              await new Promise((r) => setTimeout(r, workerId * 180));
-            }
-            while (true) {
-              const segIdx = nextSegCursor++;
-              if (segIdx >= totalSegs) break;
-
-              const cacheKey = `${file.name}:${file.size}:${totalSegs}:${segIdx}`;
-              const cachedPages = audioSegmentCacheRef.current.get(cacheKey);
-
-              if (cachedPages && cachedPages.length > 0) {
-                segResults[segIdx] = cachedPages;
-              } else {
-                const seg = clientSegments[segIdx];
-                const pages = await transcribeBufferWithAutoSplit(
-                  seg.bytes,
-                  seg.mimeType,
-                  segIdx,
-                  0
-                );
-                audioSegmentCacheRef.current.set(cacheKey, pages);
-                segResults[segIdx] = pages;
-              }
-
-              completedSegs++;
-              const pct = Math.min(
-                98,
-                10 + Math.round((completedSegs / Math.max(1, totalSegs)) * 88)
-              );
-              setAudioProgressPercent((prev) => Math.max(prev, pct));
-              setAudioConvertStatus(
-                `پشکا ${toEasternArabicNumerals(completedSegs)} ژ ${toEasternArabicNumerals(
-                  totalSegs
-                )} ب سەرکەفتیانە هاتە نڤیسین (${toEasternArabicNumerals(pct)}٪)...`
-              );
-            }
-          };
-
-          await Promise.all(
-            Array.from({ length: WORKER_COUNT }, (_, wIdx) => runSegmentWorker(wIdx))
-          );
-
-          const allOrderedParsed: { heading?: string; paragraphs: string[] }[] = [];
-          for (const r of segResults) {
-            if (r) allOrderedParsed.push(...r);
-          }
-          returnedPages = assembleBookPagesFromSegmentPages(
-            allOrderedParsed,
-            fileMode,
-            startPageNum,
-            effectiveBookTitle,
-            computedLessonTitle,
-            effectiveSpeaker
-          );
-          setAudioProgressPercent(100);
-        } else {
-          // Fallback to server job if client segmentation returned empty
+        // Primary path: Upload original audio to server background worker (24kHz 64kbps studio-clarity 3-minute segments with Two-Stage Deep Badini Authoring + Proofreading)
+        try {
           const uploadId = await uploadBufferInChunks(
             '/api/audio-to-book',
             fileBytes,
@@ -2347,7 +2197,7 @@ export default function BadiniBookTranslatorPage() {
 
           setAudioProgressPercent((prev) => Math.max(prev, 22));
           setAudioConvertStatus(
-            `دەنگ گەهشتە سێرڤەری — دابەشکرن و نڤیسینا بلەز دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
+            `دەنگ گەهشتە سێرڤەری — گوهداریا دوو-جارکی و نڤیسینا پیت ب پیت دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
           );
 
           const startJobObj = startData.job as { id?: string } | undefined;
@@ -2359,14 +2209,14 @@ export default function BadiniBookTranslatorPage() {
             const jobId = startJobObj.id;
             let consecutivePollErrors = 0;
             while (true) {
-              await new Promise((r) => setTimeout(r, 900));
+              await new Promise((r) => setTimeout(r, 950));
               try {
                 const pollRes = await fetch(`/api/audio-to-book?jobId=${encodeURIComponent(jobId)}`, {
                   cache: 'no-store',
                 });
                 if (!pollRes.ok) {
                   consecutivePollErrors++;
-                  if (consecutivePollErrors > 25) {
+                  if (consecutivePollErrors > 60) {
                     throw new Error('پەیوەندی دگەل سێرڤەری پچیا، تکایە دووبارە هەول بدە.');
                   }
                   continue;
@@ -2424,6 +2274,165 @@ export default function BadiniBookTranslatorPage() {
               }
             }
           }
+        } catch (serverJobErr) {
+          // Fallback to sequential high-clarity client segments with rolling context if server background job failed
+          const clientSegments = await prepareClientAudioSegments(file, fileBytes);
+          if (clientSegments.length === 0) {
+            throw serverJobErr;
+          }
+
+          const totalSegs = clientSegments.length;
+          const allOrderedParsed: { heading?: string; paragraphs: string[] }[] = [];
+          let rollingContextTail = '';
+
+          setAudioProgressPercent(10);
+          setAudioConvertStatus(
+            `دەنگ هاتە ئامادەکرن بۆ ${toEasternArabicNumerals(
+              totalSegs
+            )} پشکێن زەلال — نڤیسینا زانستی دەستپێکر (${toEasternArabicNumerals(10)}٪)...`
+          );
+
+          const transcribeBufferWithAutoSplit = async (
+            segBytes: Uint8Array,
+            segMime: string,
+            segIdx: number,
+            contextTail: string,
+            splitDepth = 0
+          ): Promise<{ heading?: string; paragraphs: string[] }[]> => {
+            let lastErr: unknown = null;
+            const maxDirectAttempts = splitDepth === 0 ? 3 : 4;
+
+            for (let attempt = 0; attempt < maxDirectAttempts; attempt++) {
+              try {
+                let res: Response;
+                if (attempt % 2 === 0) {
+                  const fd = new FormData();
+                  fd.append('action', 'transcribe-segment');
+                  fd.append('chunkIndex', String(segIdx));
+                  fd.append('totalSegments', String(totalSegs));
+                  fd.append('fileName', file.name);
+                  fd.append('mimeType', segMime);
+                  fd.append('bookTitle', effectiveBookTitle);
+                  fd.append('lessonTitle', computedLessonTitle);
+                  fd.append('speakerName', effectiveSpeaker);
+                  fd.append('previousContextTail', contextTail);
+                  fd.append(
+                    'chunk',
+                    new Blob([segBytes.slice().buffer as ArrayBuffer], {
+                      type: segMime,
+                    }),
+                    `seg_${segIdx}.${segMime.includes('wav') ? 'wav' : 'mp3'}`
+                  );
+
+                  res = await fetch('/api/audio-to-book', {
+                    method: 'POST',
+                    body: fd,
+                  });
+                } else {
+                  const chunkBase64 = uint8SliceToBase64(segBytes);
+                  res = await fetch('/api/audio-to-book', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      action: 'transcribe-segment',
+                      chunkIndex: segIdx,
+                      totalSegments: totalSegs,
+                      fileName: file.name,
+                      mimeType: segMime,
+                      bookTitle: effectiveBookTitle,
+                      lessonTitle: computedLessonTitle,
+                      speakerName: effectiveSpeaker,
+                      previousContextTail: contextTail,
+                      chunkBase64,
+                    }),
+                  });
+                }
+
+                const parsed = await safeParseJson(res);
+                if (!res.ok || parsed.error || !Array.isArray(parsed.pages)) {
+                  throw new Error(parsed.error || 'شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
+                }
+                return parsed.pages as { heading?: string; paragraphs: string[] }[];
+              } catch (err) {
+                lastErr = err;
+                await fetch('/api/audio-to-book?ping=1', { cache: 'no-store' }).catch(() => {});
+                await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+              }
+            }
+
+            if (splitDepth < 2 && segBytes.byteLength > 250 * 1024) {
+              const halves = splitClientSegmentInHalf(segBytes, segMime);
+              if (halves.length === 2) {
+                const pagesA = await transcribeBufferWithAutoSplit(
+                  halves[0].bytes,
+                  halves[0].mimeType,
+                  segIdx,
+                  contextTail,
+                  splitDepth + 1
+                );
+                const lastPageA = pagesA[pagesA.length - 1];
+                const tailA = lastPageA ? lastPageA.paragraphs.slice(-2).join(' ') : contextTail;
+                const pagesB = await transcribeBufferWithAutoSplit(
+                  halves[1].bytes,
+                  halves[1].mimeType,
+                  segIdx,
+                  tailA,
+                  splitDepth + 1
+                );
+                return [...pagesA, ...pagesB];
+              }
+            }
+
+            throw lastErr || new Error('شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
+          };
+
+          for (let segIdx = 0; segIdx < totalSegs; segIdx++) {
+            const cacheKey = `${file.name}:${file.size}:${totalSegs}:${segIdx}:v2`;
+            const cachedPages = audioSegmentCacheRef.current.get(cacheKey);
+            let segPages: { heading?: string; paragraphs: string[] }[];
+
+            if (cachedPages && cachedPages.length > 0) {
+              segPages = cachedPages;
+            } else {
+              const seg = clientSegments[segIdx];
+              segPages = await transcribeBufferWithAutoSplit(
+                seg.bytes,
+                seg.mimeType,
+                segIdx,
+                rollingContextTail,
+                0
+              );
+              audioSegmentCacheRef.current.set(cacheKey, segPages);
+            }
+
+            allOrderedParsed.push(...segPages);
+            const lastSegPage = segPages[segPages.length - 1];
+            if (lastSegPage && Array.isArray(lastSegPage.paragraphs)) {
+              rollingContextTail = lastSegPage.paragraphs.slice(-2).join(' ');
+            }
+
+            const completedSegs = segIdx + 1;
+            const pct = Math.min(
+              98,
+              10 + Math.round((completedSegs / Math.max(1, totalSegs)) * 88)
+            );
+            setAudioProgressPercent((prev) => Math.max(prev, pct));
+            setAudioConvertStatus(
+              `پشکا ${toEasternArabicNumerals(completedSegs)} ژ ${toEasternArabicNumerals(
+                totalSegs
+              )} ب سەرکەفتیانە هاتە نڤیسین (${toEasternArabicNumerals(pct)}٪)...`
+            );
+          }
+
+          returnedPages = assembleBookPagesFromSegmentPages(
+            allOrderedParsed,
+            fileMode,
+            startPageNum,
+            effectiveBookTitle,
+            computedLessonTitle,
+            effectiveSpeaker
+          );
+          setAudioProgressPercent(100);
         }
 
         if (returnedPages.length === 0) {
@@ -3167,7 +3176,7 @@ export default function BadiniBookTranslatorPage() {
         })),
       }));
 
-      // Compact representation of all pages in the active book (full text for nearby pages, compact 550-char index for distant pages so payload stays <80KB even on 142-page books)
+      // Compact representation of all pages in the active book (full text for nearby pages, rich 750-char index for distant pages)
       const allBookPagesCompact = pages.map((p) => {
         const rawPageText = p.blocks
           .map((b) => {
@@ -3179,10 +3188,10 @@ export default function BadiniBookTranslatorPage() {
           })
           .filter(Boolean)
           .join('\n');
-        const isNearby = Math.abs(p.pageNumber - currentPage) <= 3;
+        const isNearby = Math.abs(p.pageNumber - currentPage) <= 4;
         return {
           pageNumber: p.pageNumber,
-          text: isNearby || pages.length <= 25 ? rawPageText : rawPageText.slice(0, 550),
+          text: isNearby || pages.length <= 30 ? rawPageText : rawPageText.slice(0, 750),
         };
       });
 
@@ -3201,6 +3210,8 @@ export default function BadiniBookTranslatorPage() {
         currentFontId: bookFontId,
         currentFontSizePt: fontSizePt,
         currentViewMode: viewMode,
+        translationQuality: 'authentic-badini-high',
+        preferredModel: 'gemini-4-argon',
         history: recentHistoryPayload,
       });
 
@@ -3261,6 +3272,36 @@ export default function BadiniBookTranslatorPage() {
         didModifySpecificPage = true;
       }
 
+      // 0b. Handle Agentic Tool: `batchUpdatePages(updates)` for updating multiple pages at once
+      if (Array.isArray(data.batchUpdatedPages) && data.batchUpdatedPages.length > 0) {
+        const batchMap = new Map<number, string>();
+        for (const item of data.batchUpdatedPages) {
+          if (
+            item &&
+            typeof item.pageNumber === 'number' &&
+            typeof item.newBadiniText === 'string' &&
+            item.newBadiniText.trim()
+          ) {
+            batchMap.set(item.pageNumber, item.newBadiniText.trim());
+          }
+        }
+        if (batchMap.size > 0) {
+          const firstBatchPage = Array.from(batchMap.keys())[0];
+          modifiedPageNum = firstBatchPage;
+          modifiedPagePreviousSnap = previousPagesSnap.find((p) => p.pageNumber === firstBatchPage);
+          workingPages = workingPages.map((p) => {
+            const newText = batchMap.get(p.pageNumber);
+            if (!newText) return p;
+            return {
+              ...p,
+              blocks: buildUpdatedBlocksFromBadiniText(p, newText),
+            };
+          });
+          didChangePages = true;
+          didModifySpecificPage = true;
+        }
+      }
+
       // 1. Handle Direct Current Page Content Edits (Blocks / Footnotes)
       if (
         (Array.isArray(data.updatedCurrentPageBlocks) && data.updatedCurrentPageBlocks.length > 0) ||
@@ -3286,8 +3327,62 @@ export default function BadiniBookTranslatorPage() {
         didModifySpecificPage = true;
       }
 
-      // 2. Handle Inserting a New Page after Current Page
-      if (
+      // 2. Handle Inserting Single or Multiple New Pages (`insertOrAppendBookPages` or legacy fields)
+      if (Array.isArray(data.insertedPagesList) && data.insertedPagesList.length > 0) {
+        const builtNewPages: BookPageData[] = [];
+        for (const pgSpec of data.insertedPagesList) {
+          const newBlocks: BookPageData['blocks'] = [];
+          if (typeof pgSpec?.heading === 'string' && pgSpec.heading.trim()) {
+            newBlocks.push({
+              type: 'heading',
+              text: pgSpec.heading.trim(),
+              align: 'center',
+              size: 'md',
+              color: 'red',
+            });
+          }
+          if (Array.isArray(pgSpec?.paragraphs)) {
+            for (const para of pgSpec.paragraphs) {
+              if (typeof para === 'string' && para.trim()) {
+                newBlocks.push({
+                  type: 'paragraph',
+                  text: para.trim(),
+                  align: 'justify',
+                  color: 'black',
+                });
+              }
+            }
+          }
+          if (newBlocks.length > 0) {
+            builtNewPages.push({
+              pageNumber: 1,
+              showHeader: true,
+              blocks: newBlocks,
+              footnotes: Array.isArray(pgSpec?.footnotes)
+                ? pgSpec.footnotes.filter((f: unknown) => typeof f === 'string' && f.trim())
+                : undefined,
+            });
+          }
+        }
+        if (builtNewPages.length > 0) {
+          const pos = data.insertPosition || 'afterCurrentPage';
+          const insertIdx =
+            pos === 'atEnd'
+              ? workingPages.length
+              : pos === 'atBeginning'
+              ? workingPages[0]?.blocks.some((b) => b.type === 'cover')
+                ? 1
+                : 0
+              : Math.min(workingPages.length, Math.max(0, currentPage));
+          workingPages = [
+            ...workingPages.slice(0, insertIdx),
+            ...builtNewPages,
+            ...workingPages.slice(insertIdx),
+          ].map((p, idx) => ({ ...p, pageNumber: idx + 1 }));
+          didChangePages = true;
+          setCurrentPage(insertIdx + 1);
+        }
+      } else if (
         (typeof data.insertNewPageHeading === 'string' && data.insertNewPageHeading.trim()) ||
         (Array.isArray(data.insertNewPageParagraphs) && data.insertNewPageParagraphs.length > 0)
       ) {
@@ -3369,6 +3464,96 @@ export default function BadiniBookTranslatorPage() {
 
       if (didChangePages) {
         replacePagesInActiveBook(workingPages);
+      }
+
+      // 4b. Handle Agentic Tool: `createNewStandaloneBook` (Creates a brand-new book in the Library & switches to it)
+      if (
+        data.createdNewBook &&
+        typeof data.createdNewBook.bookTitle === 'string' &&
+        Array.isArray(data.createdNewBook.pages) &&
+        data.createdNewBook.pages.length > 0
+      ) {
+        const newTitle = data.createdNewBook.bookTitle.trim() || 'پەرتووکا نوو';
+        const compilerName =
+          typeof data.createdNewBook.authorOrCompilerName === 'string' &&
+          data.createdNewBook.authorOrCompilerName.trim()
+            ? data.createdNewBook.authorOrCompilerName.trim()
+            : 'شیرەتکارێ زانستی';
+        const coverVerse =
+          typeof data.createdNewBook.coverVerse === 'string' &&
+          data.createdNewBook.coverVerse.trim()
+            ? data.createdNewBook.coverVerse.trim()
+            : '﴿ وَقُل رَّبِّ زِدْنِي عِلْمًا ﴾';
+        const coverVerseRef =
+          typeof data.createdNewBook.coverVerseRef === 'string' &&
+          data.createdNewBook.coverVerseRef.trim()
+            ? data.createdNewBook.coverVerseRef.trim()
+            : '[طه: ١١٤]';
+
+        const createdPages: BookPageData[] = data.createdNewBook.pages.map(
+          (
+            pg: { heading?: string; paragraphs?: string[]; footnotes?: string[] },
+            idx: number
+          ) => {
+            const blocks: BookPageData['blocks'] = [];
+            if (idx === 0) {
+              blocks.push({
+                type: 'cover',
+                kicker: 'پەرتووکخانا زانستێن شەرعی ب کوردیا بادینی',
+                titleLines: [newTitle],
+                compilerLabel: 'ئامادەکرن و داڕشتن:',
+                compilerName,
+                verse: coverVerse,
+                verseRef: coverVerseRef,
+              });
+            }
+            if (typeof pg.heading === 'string' && pg.heading.trim()) {
+              blocks.push({
+                type: 'heading',
+                text: pg.heading.trim(),
+                align: 'center',
+                size: idx === 0 ? 'md' : 'lg',
+                color: 'red',
+              });
+            }
+            if (Array.isArray(pg.paragraphs)) {
+              for (const para of pg.paragraphs) {
+                if (typeof para === 'string' && para.trim()) {
+                  blocks.push({
+                    type: 'paragraph',
+                    text: para.trim(),
+                    align: 'justify',
+                    color: 'black',
+                  });
+                }
+              }
+            }
+            return {
+              pageNumber: idx + 1,
+              showHeader: idx > 0,
+              blocks,
+              footnotes: Array.isArray(pg.footnotes)
+                ? pg.footnotes.filter((f) => typeof f === 'string' && f.trim())
+                : undefined,
+            };
+          }
+        );
+
+        const newBookId = `ai-book-${Date.now()}`;
+        const newBookProject: BookProject = {
+          id: newBookId,
+          title: newTitle,
+          titleBadini: newTitle,
+          headerTitle: newTitle,
+          createdAt: new Date().toLocaleDateString('ku-IQ'),
+          totalPages: createdPages.length,
+          pages: createdPages,
+        };
+
+        setCustomBooks((prev) => [newBookProject, ...prev]);
+        setActiveBookId(newBookId);
+        setCurrentPage(1);
+        setDownloadSuccessMsg(`پەرتووکا نوو «${newTitle}» ب سەرکەفتیانە هاتە دروستکرن!`);
       }
 
       // 5. Handle Removing or Adding Cover if requested by User
@@ -3471,7 +3656,50 @@ export default function BadiniBookTranslatorPage() {
         );
       }
 
-      // 9. Handle Website-Wide Library & Navigation Commands (`navigateToPage`, etc.)
+      // 9. Handle Website-Wide Library, Book Merging & Navigation Commands (`navigateToPage`, `manageLibraryAndExport`, etc.)
+      if (
+        typeof data.mergePrimaryBookId === 'string' &&
+        data.mergePrimaryBookId.trim() &&
+        typeof data.mergeSecondaryBookId === 'string' &&
+        data.mergeSecondaryBookId.trim()
+      ) {
+        const primaryBook = allBooks.find((b) => b.id === data.mergePrimaryBookId.trim());
+        const secondaryBook = allBooks.find((b) => b.id === data.mergeSecondaryBookId.trim());
+        if (primaryBook && secondaryBook && primaryBook.id !== secondaryBook.id) {
+          const cleanedSecondaryPages = secondaryBook.pages.map((p, idx) => {
+            if (idx === 0 && p.blocks.some((b) => b.type === 'cover')) {
+              return {
+                ...p,
+                showHeader: true,
+                blocks: p.blocks.filter((b) => b.type !== 'cover'),
+              };
+            }
+            return p;
+          }).filter((p) => p.blocks.length > 0);
+
+          const mergedPages: BookPageData[] = [
+            ...primaryBook.pages,
+            ...cleanedSecondaryPages,
+          ].map((p, idx) => ({ ...p, pageNumber: idx + 1 }));
+
+          const mergedId = `merged-${Date.now()}`;
+          const mergedTitle = `${primaryBook.title} + ${secondaryBook.title}`;
+          const mergedBookProject: BookProject = {
+            id: mergedId,
+            title: mergedTitle,
+            titleBadini: mergedTitle,
+            headerTitle: primaryBook.headerTitle || primaryBook.title,
+            createdAt: new Date().toLocaleDateString('ku-IQ'),
+            totalPages: mergedPages.length,
+            pages: mergedPages,
+          };
+          setCustomBooks((prev) => [mergedBookProject, ...prev]);
+          setActiveBookId(mergedId);
+          setCurrentPage(1);
+          setDownloadSuccessMsg(`هەردوو پەرتووک ب سەرکەفتیانە هاتنە تێکهەلکرن د ناڤ «${mergedTitle}» دا!`);
+        }
+      }
+
       if (typeof data.deleteLessonNumber === 'number' && data.deleteLessonNumber >= 1) {
         const targetTrack = activeBook.audioTracks?.[data.deleteLessonNumber - 1];
         if (targetTrack) {
@@ -3500,6 +3728,7 @@ export default function BadiniBookTranslatorPage() {
       }
 
       if (
+        data.navigateToSection === 'upload' ||
         data.navigateToSection === 'reader' ||
         data.navigateToSection === 'audio' ||
         data.navigateToSection === 'library' ||
@@ -3509,9 +3738,43 @@ export default function BadiniBookTranslatorPage() {
       }
 
       if (data.triggerExport === 'pdf') {
-        void handleDownloadFullPdf();
+        if (
+          typeof data.exportStartPage === 'number' &&
+          typeof data.exportEndPage === 'number'
+        ) {
+          const start = Math.max(1, Math.min(workingPages.length, data.exportStartPage));
+          const end = Math.max(start, Math.min(workingPages.length, data.exportEndPage));
+          setPdfRangeStart(start);
+          setPdfRangeEnd(end);
+          const selectedPages = workingPages.filter((p) => p.pageNumber >= start && p.pageNumber <= end);
+          void handleExportSpecificBookPdf(
+            selectedPages,
+            activeBook.headerTitle,
+            `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${start}-بۆ-${end}.pdf`,
+            activeBook.id
+          );
+        } else {
+          void handleDownloadFullPdf();
+        }
       } else if (data.triggerExport === 'word') {
-        void handleDownloadFullWord();
+        if (
+          typeof data.exportStartPage === 'number' &&
+          typeof data.exportEndPage === 'number'
+        ) {
+          const start = Math.max(1, Math.min(workingPages.length, data.exportStartPage));
+          const end = Math.max(start, Math.min(workingPages.length, data.exportEndPage));
+          setPdfRangeStart(start);
+          setPdfRangeEnd(end);
+          const selectedPages = workingPages.filter((p) => p.pageNumber >= start && p.pageNumber <= end);
+          void handleExportSpecificBookWord(
+            selectedPages,
+            activeBook.headerTitle,
+            `${activeBook.headerTitle.replace(/\s+/g, '-')}-لاپەر-${start}-بۆ-${end}.doc`,
+            activeBook.id
+          );
+        } else {
+          void handleDownloadFullWord();
+        }
       }
 
       const assistantMsg: ChatMessage = {
@@ -4056,24 +4319,24 @@ export default function BadiniBookTranslatorPage() {
     <div
       className="spatial-scene relative min-h-screen w-full text-white overflow-x-hidden flex items-center justify-center p-2 sm:p-6 lg:p-8 pb-20 md:pb-8"
     >
-      {/* High-Resolution Warm Scholarly Library Ambient Background (No Portraits/People) */}
+      {/* User-Selected Scholarly Library & Window Background */}
       <div
         aria-hidden="true"
-        className="no-print fixed inset-0 pointer-events-none z-0 overflow-hidden bg-[#2b221a]"
+        className="no-print fixed inset-0 pointer-events-none z-0 overflow-hidden bg-[#1e1712]"
       >
         <div
-          className="absolute inset-0 bg-cover bg-center scale-105"
+          className="absolute inset-0 bg-cover bg-center"
           style={{
             backgroundImage:
-              "url('https://images.unsplash.com/photo-1507842229356-51c61504d3ab?q=85&w=2200&auto=format&fit=crop')",
+              "url('/assets/aistudio/photo_2026-11-05_12-57-46_88698d31.jpg')",
           }}
         />
-        {/* Warm Ambient Golden Library Glow */}
+        {/* Subtle Warm Ambient Vignette for Glass Contrast */}
         <div
           className="absolute inset-0"
           style={{
             background:
-              'radial-gradient(circle at 82% 24%, rgba(255, 200, 125, 0.32) 0%, transparent 52%), linear-gradient(180deg, rgba(24, 19, 15, 0.42) 0%, rgba(14, 11, 9, 0.56) 100%)',
+              'linear-gradient(180deg, rgba(18, 14, 11, 0.22) 0%, rgba(12, 9, 7, 0.36) 100%)',
           }}
         />
       </div>
@@ -4204,6 +4467,88 @@ export default function BadiniBookTranslatorPage() {
             dir="rtl"
             className="glass-main-panel-3d flex-1 min-w-0 p-2.5 sm:p-5 lg:h-full overflow-y-auto overflow-x-hidden dark-scrollbar flex flex-col gap-3 sm:gap-4 relative z-10"
           >
+          {/* ─── MOBILE TOP iOS 26 LIQUID GLASS BAR (0kzh/glisse Glass + Button + Morphing Menu) ─── */}
+          {mounted && (
+            <div className="no-print md:hidden flex items-center justify-between gap-2 pb-1 shrink-0 relative z-30">
+              <GlisseGlass
+                className="flex-1 min-w-0 px-3.5 py-2 rounded-[20px] flex items-center justify-between gap-2"
+                onClick={() => setActiveSection('reader')}
+              >
+                <div className="min-w-0 flex items-center gap-2">
+                  <BookOpen className="w-4 h-4 text-blue-400 shrink-0" />
+                  <span className="text-xs font-heading font-bold text-white truncate">
+                    {activeBook.title}
+                  </span>
+                </div>
+                <span className="text-[11px] font-heading font-bold text-emerald-400 tabular-nums shrink-0">
+                  {toEasternArabicNumerals(currentPage)} / {toEasternArabicNumerals(maxPageCount)}
+                </span>
+              </GlisseGlass>
+
+              <div dir="ltr" className="flex items-center gap-1.5 shrink-0">
+                <GlisseButton
+                  aria-label="شیرەتکارێ زیرەک"
+                  icon={<Sparkles size={18} />}
+                  variant={activeSection === 'chat' || isReaderAgentOpen ? 'filled' : 'glass'}
+                  onClick={() => {
+                    if (activeSection === 'reader') {
+                      setIsReaderAgentOpen((prev) => !prev);
+                    } else {
+                      setActiveSection('chat');
+                    }
+                  }}
+                />
+
+                <GlisseButton
+                  aria-label="داگرتنا PDF"
+                  icon={<Download size={18} />}
+                  variant="glass"
+                  disabled={isGeneratingPdf}
+                  onClick={() => void handleDownloadFullPdf()}
+                />
+
+                <GlisseMenu
+                  aria-label="لیستا کاران"
+                  align="start"
+                  items={[
+                    {
+                      label: 'داگرتنا پەرتووکێ (PDF)',
+                      icon: <Download size={16} />,
+                      onSelect: () => void handleDownloadFullPdf(),
+                    },
+                    {
+                      label: 'داگرتنا فایلا (Word)',
+                      icon: <FileText size={16} />,
+                      onSelect: () => void handleDownloadFullWord(),
+                    },
+                    {
+                      label: 'دەستکاریکرنا لاپەڕی',
+                      icon: <Edit3 size={16} />,
+                      onSelect: () => {
+                        setActiveSection('reader');
+                        setEditingPageNumber(currentPage);
+                      },
+                    },
+                    'separator',
+                    {
+                      label: 'دیزاینا کلاسیکی یا شەرعی',
+                      icon: <Palette size={16} />,
+                      onSelect: () => updateActiveBookDesign(BOOK_DESIGN_PRESETS[0]),
+                    },
+                    {
+                      label: 'دیزاینا شاهانە یا زێڕین',
+                      icon: <Sparkles size={16} />,
+                      onSelect: () =>
+                        updateActiveBookDesign(
+                          BOOK_DESIGN_PRESETS[1] || BOOK_DESIGN_PRESETS[0]
+                        ),
+                    },
+                  ]}
+                />
+              </div>
+            </div>
+          )}
+
           {/* ─── Progress: PDF Generation ─── */}
           {isGeneratingPdf && pdfProgress && (
             <div className="no-print bg-white/[0.06] border border-white/15 rounded-2xl p-4 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)] space-y-3 shrink-0">
@@ -4864,9 +5209,9 @@ export default function BadiniBookTranslatorPage() {
                         </button>
                       </div>
 
-                      {/* View Mode Switcher using Official glisse SegmentedControl */}
+                      {/* View Mode Switcher using Official glisse SegmentedControl (Visible on Mobile & Desktop) */}
                       {mounted && (
-                        <div className="hidden sm:flex items-center">
+                        <div className="flex items-center justify-center w-full sm:w-auto pt-1 sm:pt-0">
                           <SegmentedControl
                             aria-label="View Mode"
                             items={[
@@ -4883,6 +5228,43 @@ export default function BadiniBookTranslatorPage() {
                       )}
                     </div>
                   </div>
+
+                  {/* Official 0kzh/glisse Interactive Liquid Glass Controls Strip (Slider + Switch) */}
+                  {mounted && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-3.5 py-2.5 rounded-2xl bg-black/30 border border-white/10">
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] font-heading font-bold text-white/75 shrink-0">
+                          قەبارێ فۆنتی ({toEasternArabicNumerals(fontSizePt)})
+                        </span>
+                        <div className="flex-1 min-w-[110px]">
+                          <GlisseSlider
+                            aria-label="Font Size"
+                            min={13.5}
+                            max={20}
+                            step={0.5}
+                            value={fontSizePt}
+                            onValueChange={(v) => setFontSizePt(Number(v.toFixed(1)))}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] font-heading font-bold text-white/75">
+                          سەردێڕێن چوارچووڤەکری
+                        </span>
+                        <GlisseSwitch
+                          aria-label="سەردێڕێن چوارچووڤەکری"
+                          checked={Boolean(activeBookDesign.headingBoxed)}
+                          onCheckedChange={(checked) =>
+                            updateActiveBookDesign({
+                              ...activeBookDesign,
+                              headingBoxed: checked,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   {/* Quick In-Book Search & Chapter Jump Strip using Official glisse Input */}
                   <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-white/10">
@@ -4951,19 +5333,32 @@ export default function BadiniBookTranslatorPage() {
                         />
                       </div>
 
-                      {/* Bottom Page Turner */}
-                      <div className="w-full max-w-[595px] bg-black/40 border border-white/12 rounded-full p-2 flex items-center justify-between">
-                        <button
-                          type="button"
-                          disabled={currentPage <= 1}
-                          onClick={() => {
-                            setCurrentPage((p) => Math.max(1, p - 1));
-                          }}
-                          className="min-h-[36px] px-4 py-1.5 text-xs font-heading font-bold text-white bg-white/10 hover:bg-white/15 disabled:opacity-40 rounded-full flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all border border-white/12"
-                        >
-                          <ChevronRight className="w-4 h-4" />
-                          <span>لاپەرێ بەرێ</span>
-                        </button>
+                      {/* Bottom Page Turner using Official 0kzh/glisse Buttons */}
+                      <div className="w-full max-w-[595px] bg-black/40 border border-white/12 rounded-full p-2 flex items-center justify-between gap-2">
+                        {mounted ? (
+                          <GlisseButton
+                            variant="glass"
+                            disabled={currentPage <= 1}
+                            icon={<ChevronRight className="w-4 h-4" />}
+                            onClick={() => {
+                              setCurrentPage((p) => Math.max(1, p - 1));
+                            }}
+                          >
+                            لاپەرێ بەرێ
+                          </GlisseButton>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={currentPage <= 1}
+                            onClick={() => {
+                              setCurrentPage((p) => Math.max(1, p - 1));
+                            }}
+                            className="min-h-[36px] px-4 py-1.5 text-xs font-heading font-bold text-white bg-white/10 hover:bg-white/15 disabled:opacity-40 rounded-full flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all border border-white/12"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                            <span>لاپەرێ بەرێ</span>
+                          </button>
+                        )}
 
                         <div className="flex flex-col items-center">
                           <span className="text-xs font-heading font-extrabold text-white tabular-nums">
@@ -4972,17 +5367,30 @@ export default function BadiniBookTranslatorPage() {
                           </span>
                         </div>
 
-                        <button
-                          type="button"
-                          disabled={currentPage >= maxPageCount}
-                          onClick={() => {
-                            setCurrentPage((p) => Math.min(maxPageCount, p + 1));
-                          }}
-                          className="min-h-[36px] px-4 py-1.5 text-xs font-heading font-bold text-white bg-gradient-to-r from-blue-500 to-blue-600 hover:brightness-110 disabled:opacity-40 rounded-full shadow-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all"
-                        >
-                          <span>لاپەرێ پاشتر</span>
-                          <ChevronLeft className="w-4 h-4 text-white" />
-                        </button>
+                        {mounted ? (
+                          <GlisseButton
+                            variant="filled"
+                            disabled={currentPage >= maxPageCount}
+                            icon={<ChevronLeft className="w-4 h-4" />}
+                            onClick={() => {
+                              setCurrentPage((p) => Math.min(maxPageCount, p + 1));
+                            }}
+                          >
+                            لاپەرێ پاشتر
+                          </GlisseButton>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={currentPage >= maxPageCount}
+                            onClick={() => {
+                              setCurrentPage((p) => Math.min(maxPageCount, p + 1));
+                            }}
+                            className="min-h-[36px] px-4 py-1.5 text-xs font-heading font-bold text-white bg-gradient-to-r from-blue-500 to-blue-600 hover:brightness-110 disabled:opacity-40 rounded-full shadow-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-all"
+                          >
+                            <span>لاپەرێ پاشتر</span>
+                            <ChevronLeft className="w-4 h-4 text-white" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
@@ -5333,30 +5741,19 @@ export default function BadiniBookTranslatorPage() {
                       <label className="block text-[11px] font-bold text-white/60 mb-1.5">
                         شێوازێ پەرتووکێ
                       </label>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => setAudioTargetMode('new')}
-                          className={`flex-1 px-2.5 py-1.5 text-[11px] font-heading font-bold rounded-full transition-all cursor-pointer ${
-                            audioTargetMode === 'new'
-                              ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-xs'
-                              : 'bg-white/8 text-white/60 border border-white/12 hover:text-white'
-                          }`}
-                        >
-                          پەرتووکا سەربەخۆ
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setAudioTargetMode('append')}
-                          className={`flex-1 px-2.5 py-1.5 text-[11px] font-heading font-bold rounded-full transition-all cursor-pointer ${
-                            audioTargetMode === 'append'
-                              ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-xs'
-                              : 'bg-white/8 text-white/60 border border-white/12 hover:text-white'
-                          }`}
-                        >
-                          گرێدانا ب پەرتووکا هەلبژارتی
-                        </button>
-                      </div>
+                      {mounted ? (
+                        <SegmentedControl
+                          aria-label="شێوازێ پەرتووکێ"
+                          items={[
+                            { value: 'new', label: 'پەرتووکا سەربەخۆ' },
+                            { value: 'append', label: 'گرێدان ب پەرتووکێ' },
+                          ]}
+                          value={audioTargetMode}
+                          onValueChange={(val) =>
+                            setAudioTargetMode(val === 'append' ? 'append' : 'new')
+                          }
+                        />
+                      ) : null}
                     </div>
 
                     {audioTargetMode === 'append' && (

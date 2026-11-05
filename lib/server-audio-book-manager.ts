@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { ThinkingLevel, Type } from '@google/genai';
 import { BookPageData } from './book-types';
 import {
+  RESILIENT_MODELS,
   collapseRepetitionLoops,
   generateContentResilient,
   parseOrRepairJson,
@@ -37,7 +38,6 @@ export interface ServerAudioBookJob {
 
 function resolveWritableAudioDataDir(): string {
   const cwd = process.cwd();
-  // On Vercel / AWS Lambda (/var/task), process.cwd() is read-only; always use os.tmpdir() (/tmp)
   if (!cwd.startsWith('/var/task')) {
     try {
       const localDir = path.join(cwd, '.data', 'audio-jobs');
@@ -64,12 +64,11 @@ const DATA_DIR = resolveWritableAudioDataDir();
 const JOBS_META_PATH = path.join(DATA_DIR, 'audio-jobs.json');
 
 declare global {
-  // eslint-disable-next-line no-var
   var __badiniAudioJobs: Map<string, ServerAudioBookJob> | undefined;
-  // eslint-disable-next-line no-var
   var __badiniActiveAudioLoops: Set<string> | undefined;
-  // eslint-disable-next-line no-var
-  var __badiniAudioUploadChunks: Map<string, { chunks: Buffer[]; mimeType: string; fileName: string }> | undefined;
+  var __badiniAudioUploadChunks:
+    | Map<string, { chunks: Buffer[]; mimeType: string; fileName: string }>
+    | undefined;
 }
 
 export function ensureAudioDataDir() {
@@ -137,9 +136,9 @@ function toEasternArabic(num: number | string): string {
 }
 
 /**
- * Uses ffprobe/ffmpeg to get audio duration and split audio into fast, lightweight
- * 4-minute (240s) 16kHz mono 20kbps MP3 segments so they can be transcribed in high-concurrency
- * parallel batches without hitting any payload limit or timeout.
+ * Splits audio into focused 90-second (1.5-minute) 32kHz mono 128kbps MP3 segments
+ * with dynamic vocal normalization (`highpass=f=75,lowpass=f=13000,dynaudnorm`)
+ * so every single Badini Kurdish and Arabic letter/phoneme is loud, crisp, and unmistakable.
  */
 async function splitAudioIntoFastSegments(
   inputPath: string,
@@ -171,7 +170,7 @@ async function splitAudioIntoFastSegments(
 
   const outPattern = path.join(workDir, 'seg_%03d.mp3');
   try {
-    // Convert and split into 240-second (4-minute) mono 16kHz 20kbps MP3 segments (~600 KB each) using multi-threading
+    // Try studio voice-clarity filter + 32kHz 128kbps in 90-second focused segments first
     await execFileAsync('ffmpeg', [
       '-y',
       '-threads',
@@ -179,16 +178,18 @@ async function splitAudioIntoFastSegments(
       '-i',
       inputPath,
       '-vn',
+      '-af',
+      'highpass=f=75,lowpass=f=13000,dynaudnorm=f=150:g=15',
       '-ac',
       '1',
       '-ar',
-      '16000',
+      '32000',
       '-b:a',
-      '20k',
+      '128k',
       '-f',
       'segment',
       '-segment_time',
-      '240',
+      '90',
       outPattern,
     ]);
 
@@ -202,15 +203,186 @@ async function splitAudioIntoFastSegments(
       return { segmentPaths: files, durationSec };
     }
   } catch {
-    // If ffmpeg is unavailable, fall back to the single original file
+    // Fallback without audio filter if filter flags are unsupported by minimal ffmpeg build
+    try {
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-threads',
+        '0',
+        '-i',
+        inputPath,
+        '-vn',
+        '-ac',
+        '1',
+        '-ar',
+        '32000',
+        '-b:a',
+        '128k',
+        '-f',
+        'segment',
+        '-segment_time',
+        '90',
+        outPattern,
+      ]);
+
+      const files = fs
+        .readdirSync(workDir)
+        .filter((f) => f.startsWith('seg_') && f.endsWith('.mp3'))
+        .sort()
+        .map((f) => path.join(workDir, f));
+
+      if (files.length > 0) {
+        return { segmentPaths: files, durationSec };
+      }
+    } catch {
+      // Fall back to single original file
+    }
   }
 
   return { segmentPaths: [inputPath], durationSec };
 }
 
-interface ParsedSegmentPage {
+export interface ParsedSegmentPage {
   heading?: string;
   paragraphs: string[];
+}
+
+const EXACT_BADINI_VERBATIM_SYSTEM_PROMPT = `تۆ پسپۆرێ هەری مەزن و دەقیقێ گۆهۆڕینا دەنگێ کوردی (شێوەزارێ بادینی: دهۆک، زاخۆ، ئامێدی، ئاکرێ، سێمێل، بارزان) و عەرەبی یی بۆ نڤیسینا پەرتووکێ.
+
+یاسایێن بنەڕەتی و زۆر توند (پیت ب پیت جێبەجێ بکە):
+١. **نەفسی دەنگی پیت ب پیت و پەیڤ ب پەیڤ بنڤیسە — بێی چ زێدەهی و بێی چ گوهۆڕین (100% Exact Verbatim):**
+   - کا د ناڤ دەنگی دا چ هاتیە گۆتن، **نەفسی وێ ئاخفتنێ پەیڤ ب پەیڤ و پیت ب پیت** بنڤیسە!
+   - **ب چ رەنگان چ پەیڤان یان شلۆڤەکرنان ژ دەڤ خۆ زێدە نەکە!** (Zero additions).
+   - **ب چ رەنگان ئاخفتنا مامۆستای نەگوهۆڕە و تەلخیس/کورت نەکە!** (Zero paraphrasing, zero summarization).
+   - ژ چرکەیا ئێکێ هەتا چرکەیا دوماهیێ یا دەنگی، چ پەیڤەکێ ژبیر نەکە و نەقوتینە.
+
+٢. **نیاسینا پیت ب پیت یا پەیڤێن بادینی و عەرەبی (Letter-by-Letter Badini Orthographic Precision):**
+   - ب کویرترین هزرکرن گوهداریا هەر بڕگە و پیتەکا دەنگێ مامۆستای بکە دا کو پەیڤێ ب تەمامی و ب رێنڤیسا وێ یا دروست بنڤیسی:
+   - پیتێن بادینی ب هویربینی ژێک جودا بکە:
+     * پیتێن (پ / ب)، (چ / ج)، (ژ / ز / ش)، (ڤ / ف / و)، (گ / ک / ق)، (ح / هـ / خ / ع / غ)، (ڕ / ر)، (ڵ / ل).
+     * بزوێنێن بادینی ب دروستی بنڤیسە: فەتحەیا کوردی ب «ە» (نەک «ه»)، یائا درێژ ب «ێ» یان «ی»، واوا گرتی ب «ۆ» یان «و».
+     * نموونەیێن پەیڤێن بادینی یێن بەربەلاڤ د وانەیان دا (ب دروستی بنڤیسە دەمێ مامۆستا دبێژیت):
+       «ئەڤە، ئەڤێ، ئەڤان، هندێ، ژبەر هندێ، لەوما، چنکی، بەلێ، پا، هەروەسا، دەمێ، پشتی، بەری، د ناڤبەرا، ل سەر، ل دۆر، ل دەف، نک، دەربارەی، دبێژیت، دکەت، چێدکەت، دچیت، دهێت، دڤێت، دشێت، دزانیت، دبینیت، دخوینیت، ددەت، هاتە، هاتیە، گۆت، گۆتیە، فەرموو، فەرموویە، چێدبیت، چێنابیت، پێدڤیە، مەبەست، رامان، واتە، بەلگە، شلۆڤەکرن، پەرتووک، لاپەر، بابەت، پشک، وانە، خودێ تەعالا، پێغەمبەر ﷺ، موسلمان، باوەردار، قورئان، فەرموودە، زانا، فەقیهـ، عەقیدە، تەوحید، شەریعەت، نڤێژ، رۆژی، زەکات، حەج، گونەهـ، خێر، پاداشت، سزا، قەبر، قیامەت، بەهەشت، جەهنەم».
+   - ئەگەر مامۆستا ب بادینی باخڤیت، هەر ب بادینییا وی یا دەقیق بنڤیسە و ب چ رەنگان پەیڤان نەکە سۆرانی!
+
+٣. **رێکخستنا پەرتووکێ:**
+   - ئاخفتنا دەنگی ب رێکوپێکی بکە د ناڤ پەرەگرافێن پەرتووکێ دا دگەل دانانا خال و فاریزەیان (. ، ؟ !).
+   - هەر ئایەتەکا قورئانا پیرۆز مامۆستا د دەنگی دا بخوینیت، ب رێنڤیسا قورئانی د ناڤ کەڤانێن قورئانی ﴿ ... ﴾ دا بنڤیسە.
+   - هەر فەرموودەیەکا پێغەمبەری ﷺ یان مەتنەکێ عەرەبی یان گۆتنا زانایەکی ب عەرەبی مامۆستا د دەنگی دا بخوینیت، بێخە د ناڤ {{r: ... }} دا.
+   - چ جاران هەمان رستە ژ دەڤ خۆ دووبارە نەکە (No repetition loops).`;
+
+const AUDIO_GROUNDED_VERIFICATION_SYSTEM_PROMPT = `تۆ پشکنەر و راستڤەکەرێ دەقیقێ دەنگ و نڤیسینا بادینی و عەرەبی یی (Audio-Grounded Letter-by-Letter Verifier).
+فایلا دەنگی یا ئەسل دگەل نڤیسینا قۆناغا ئێکێ ل بەر دەستێ تە یە.
+
+ئەرکێ تە یێ توند:
+١. جارەکا دی چرکە ب چرکە گوهداریا دەنگی بکە و هەر پەیڤەکا د دەنگی دا دهێتە گۆتن دگەل نڤیسینا قۆناغا ئێکێ بەراورد بکە!
+٢. ئەگەر پەیڤەک د قۆناغا ئێکێ دا شاش هاتبیتە بهیستن، یان پیتەکا وێ شاش هاتبیتە نڤیسین، یان پیتەک ژێ کێم بیت، **رێک ل دویڤ دەنگێ مامۆستای پیت ب پیت راستڤەکە**!
+٣. ئەگەر مامۆستای د دەنگی دا پەیڤەک یان رستەیەک گۆتبیت و د نڤیسینا قۆناغا ئێکێ دا ژبیر ببیت، **رێک ل جهێ وێ د ناڤ رستەیێ دا بنڤیسە**!
+٤. ئەگەر د نڤیسینا قۆناغا ئێکێ دا پەیڤەک هاتبیتە زێدەکرن کو مامۆستای د دەنگی دا نەگۆتبیت، **وێ پەیڤا زێدە لادە**!
+٥. ب چ رەنگان ئاخفتنا مامۆستای نەگوهۆڕە و چ تشتەکی ژ دەڤ خۆ زێدە نەکە؛ ئارمانج ئەوە نڤیسین ١٠٠٪ پیت ب پیت و پەیڤ ب پەیڤ رێک وەکی دەنگی بیت ب رێنڤیسا دروست یا بادینی و عەرەبی (دگەل پاراستنا ﴿...﴾ بۆ ئایەتان و {{r:...}} بۆ دەقێن عەرەبی).`;
+
+/**
+ * Pass 2: Listens to the EXACT SAME AUDIO again while reading the Pass 1 transcript,
+ * verifying and fixing every single word and letter against the speaker's actual voice.
+ */
+async function verifyTranscriptAgainstAudio(
+  base64Audio: string,
+  mimeType: string,
+  draftPages: ParsedSegmentPage[],
+  segmentIdx: number,
+  totalSegments: number,
+  bookTitle: string,
+  lessonTitle: string,
+  speakerName: string
+): Promise<ParsedSegmentPage[]> {
+  if (!draftPages || draftPages.length === 0) return draftPages;
+
+  try {
+    const response = await generateContentResilient(
+      {
+        preferredModels: RESILIENT_MODELS,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Audio,
+                },
+              },
+              {
+                text: `ئەڤە دەنگێ ئەسل یێ پشکا (${segmentIdx + 1} ژ ${totalSegments}) یە ژ «${
+                  lessonTitle || bookTitle
+                }» (وانەبێژ: ${speakerName})، و ئەڤە ژی نڤیسینا قۆناغا ئێکێ یە:
+
+${JSON.stringify({ pages: draftPages }, null, 2)}
+
+تکایە جارەکا دی ب هویربینی گوهداریا دەنگی بکە و پەیڤ ب پەیڤ و پیت ب پیت دگەل ڤێ نڤیسینێ بەراورد بکە:
+- هەر پەیڤەکا شاش هاتبیتە بهیستن یان پیتەکا وێ شاش بیت، رێک ل دویڤ دەنگی پیت ب پیت راستڤەکە.
+- هەر پەیڤ یان رستەیەکا د دەنگی دا هەبیت و هاتبیتە ژبیرکرن، زێدە بکە.
+- چ زێدەهیێ ژ دەڤ خۆ نەئێخە سەر و ئاخفتنا دەنگی نەگوهۆڕە؛ وەبکە ١٠٠٪ نەفسی دەنگی بیت و ب فۆرماتا JSON بزڤڕینە.`,
+              },
+            ],
+          },
+        ],
+        config: {
+          systemInstruction: AUDIO_GROUNDED_VERIFICATION_SYSTEM_PROMPT,
+          maxOutputTokens: 32768,
+          thinkingConfig: {
+            thinkingLevel: ThinkingLevel.HIGH,
+          },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              pages: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    heading: {
+                      type: Type.STRING,
+                    },
+                    paragraphs: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                  },
+                  required: ['paragraphs'],
+                },
+              },
+            },
+            required: ['pages'],
+          },
+        },
+      },
+      6
+    );
+
+    const rawJson = response.text?.trim() || '{}';
+    const data = parseOrRepairJson<{ pages?: ParsedSegmentPage[] }>(rawJson);
+    if (Array.isArray(data.pages) && data.pages.length > 0) {
+      const verifiedPages = data.pages
+        .map((p) => ({
+          heading: p.heading ? collapseRepetitionLoops(String(p.heading)).trim() : undefined,
+          paragraphs: Array.isArray(p.paragraphs)
+            ? p.paragraphs
+                .map((para) => collapseRepetitionLoops(String(para || '')).trim())
+                .filter((para) => para.length > 0)
+            : [],
+        }))
+        .filter((p) => p.paragraphs.length > 0);
+
+      if (verifiedPages.length > 0) {
+        return verifiedPages;
+      }
+    }
+  } catch {
+    // If verification pass encounters any transient error, return the Pass 1 transcript
+  }
+
+  return draftPages;
 }
 
 async function transcribeSingleSegment(
@@ -220,30 +392,20 @@ async function transcribeSingleSegment(
   totalSegments: number,
   bookTitle: string,
   lessonTitle: string,
-  speakerName: string
+  speakerName: string,
+  previousContextTail = ''
 ): Promise<ParsedSegmentPage[]> {
   const base64Audio = segmentBuffer.toString('base64');
 
-  const systemPrompt = `تۆ نڤیسەر و رێکخەرەکێ ئەمینێ وانە و محاضرەیێن دەنگی یی ب شێوەزارێ بادینی (کوردیا کورمانجیا ژووری ب پیتێن عەرەبی) و زمانێ عەرەبی.
-
-یاسایا هەری گرنگ و بنەرەتی (ب چ رەنگان لێ دەرنەکەڤە):
-١. دەقێ دەنگی پەیڤ ب پەیڤ (حەرفیەن / Verbatim) بنڤیسە هەروەکی مامۆستای یان ئاخفتنکەری گۆتی!
-٢. ب چ رەنگان چ دەستکاریێ د ئاخفتنا مامۆستای دا نەکە، چ پەیڤان ژ دەڤ خۆ زێدە نەکە، چ پەیڤان کورت نەکە، و خۆ ئەگەر مامۆستا د پەیڤەکێ دا خەلەت ببیت ژی، هەر وەکی وی گۆتی بنڤیسە بێی کو تو ژ دەڤ خۆ بگوهۆڕی!
-٣. کارێ تە بتنێ ئەوە کو تو وی دەنگی بکەیە نڤیسینەکا رێکخستی د ناڤ لاپەرێن پەرتووکێ دا (پەرەگرافێن رێکخستی، خال و فاریزە، و سەردێڕێن گونجای بۆ بەشان).
-٤. هەر ئایەتەکا قورئانێ مامۆستا بخوینیت، ب رێنڤیسا قورئانی د ناڤ کەڤانێن قورئانی ﴿ ... ﴾ دا دانێ.
-٥. هەر فەرموودەیەکا پێغەمبەری (صلى الله عليه وسلم) یان رێزەکا مەتنێ عەرەبی یان گۆتنا زانایەکی ب عەرەبی مامۆستا بخوینیت، بێخە د ناڤ {{r: ... }} دا دا کو ب رەنگێ سۆر یێ پەرتووکێ دەرکەڤیت.
-٦. نڤیسینێ دابەش بکە ل سەر لاپەرێن رێکخستی یێن پەرتووکێ (هەر لاپەرەک نێزیکی ٥ هەتا ٦ پەرەگرافان بیت دا کو لاپەرێ A4 پڕ و جوان بیت).
-٧. هشیار بە: چ جاران هەمان رستە یان پەیڤ ب شێوەیێ خۆکار و بێ رامان د ناڤ JSON دا دووبارە نەکە (No repetition loops). هەر پەرەگرافەک با ژ ٢٥٠ پەیڤان درێژتر نەبیت و دەمێ بێدەنگی د دەنگی دا هەبیت چ تشتان نەنڤیسە.`;
+  const contextInstruction = previousContextTail
+    ? `\n\nتێبینی بۆ گرێدانا زنجیرەیی (ئەڤێ دووبارە مەنڤیسە، بتنێ دا بزانی پشکا بەری ڤێ ل سەر چ رستە ب دوماهی هاتووە):\n«${previousContextTail.slice(
+        -400
+      )}»`
+    : '';
 
   const response = await generateContentResilient(
     {
-      preferredModels: [
-        'gemini-3.8-flash',
-        'gemini-3-flash-preview',
-        'gemini-3.1-flash-lite-preview',
-        'gemini-3.5-transcribe',
-        'gemini-3.1-flash-lite',
-      ],
+      preferredModels: RESILIENT_MODELS,
       contents: [
         {
           role: 'user',
@@ -257,13 +419,14 @@ async function transcribeSingleSegment(
             {
               text: `ئەڤە پشکا (${segmentIdx + 1} ژ ${totalSegments}) یە ژ فایلا دەنگی یا ب ناڤێ «${
                 lessonTitle || bookTitle
-              }» (وانەبێژ: ${speakerName}). ب هویربینی هزر تێدا بکە و هەمی ئاخفتنا د ناڤ ڤێ پشکێ دا پەیڤ ب پەیڤ بێی چ کورتکرن یان گوهۆڕین بنڤیسە و ب باشترین شێوە رێکبێخە د ناڤ لاپەرێن پەرتووکێ دا ب فۆرماتا JSON.`,
+              }» (وانەبێژ: ${speakerName}).
+ب کویرترین هزرکرن و زۆر ب دەقیقی گوهداریا ڤی دەنگی بکە: کا د ناڤ دەنگی دا چ هاتیە گۆتن، **نەفسی دەنگی پەیڤ ب پەیڤ و پیت ب پیت** ب رێنڤیسا دروست یا بادینی و عەرەبی بنڤیسە و بکە لاپەڕێن پەرتووکێ. چ تشتەکی ژ دەڤ خۆ زێدە نەکە، چ تشتەکی کورت نەکە، و ئاخفتنا دەنگی نەگوهۆڕە! ئایەتێن قورئانێ بێخە د ناڤ ﴿...﴾ دا و دەقێن عەرەبی بێخە د ناڤ {{r:...}} دا.${contextInstruction}`,
             },
           ],
         },
       ],
       config: {
-        systemInstruction: systemPrompt,
+        systemInstruction: EXACT_BADINI_VERBATIM_SYSTEM_PROMPT,
         maxOutputTokens: 32768,
         thinkingConfig: {
           thinkingLevel: ThinkingLevel.HIGH,
@@ -279,13 +442,14 @@ async function transcribeSingleSegment(
                 properties: {
                   heading: {
                     type: Type.STRING,
-                    description: 'Optional red section heading for this page if a new topic starts.',
+                    description:
+                      'Optional short section heading taken directly from the topic spoken in the audio.',
                   },
                   paragraphs: {
                     type: Type.ARRAY,
                     items: { type: Type.STRING },
                     description:
-                      'Verbatim paragraphs spoken in the audio on this page, keeping {{r:...}} for Arabic text and ﴿...﴾ for Quranic verses.',
+                      'Exact, faithful word-for-word and letter-by-letter transcription of the audio in accurate Badini Kurdish and Arabic orthography without any added or altered content, keeping {{r:...}} for Arabic text and ﴿...﴾ for Quranic verses.',
                   },
                 },
                 required: ['paragraphs'],
@@ -296,13 +460,13 @@ async function transcribeSingleSegment(
         },
       },
     },
-    4
+    8
   );
 
   const rawJson = response.text?.trim() || '{}';
   const data = parseOrRepairJson<{ pages?: ParsedSegmentPage[] }>(rawJson);
   if (Array.isArray(data.pages) && data.pages.length > 0) {
-    return data.pages
+    const draftPages = data.pages
       .map((p) => ({
         heading: p.heading ? collapseRepetitionLoops(String(p.heading)).trim() : undefined,
         paragraphs: Array.isArray(p.paragraphs)
@@ -312,16 +476,30 @@ async function transcribeSingleSegment(
           : [],
       }))
       .filter((p) => p.paragraphs.length > 0);
+
+    if (draftPages.length > 0) {
+      // Pass 2: Audio-Grounded Verification — listen to the exact same audio a second time to verify every word & letter
+      return await verifyTranscriptAgainstAudio(
+        base64Audio,
+        mimeType,
+        draftPages,
+        segmentIdx,
+        totalSegments,
+        bookTitle,
+        lessonTitle,
+        speakerName
+      );
+    }
   }
 
   throw new Error('نەشیا دەنگی بکەتە نڤیسین، تکایە جارەکا دی هەول بدە');
 }
 
 /**
- * Pure-JS MP3 frame-boundary splitter so large MP3 files can be split into ~650KB segments
- * in memory even in serverless environments (/var/task) where ffmpeg is not installed.
+ * Pure-JS MP3 frame-boundary splitter (~1.1MB segments = ~90 seconds of speech)
+ * for environments where ffmpeg is not available.
  */
-export function splitMp3BufferByFrames(buf: Buffer, targetChunkBytes = 650 * 1024): Buffer[] {
+export function splitMp3BufferByFrames(buf: Buffer, targetChunkBytes = 1100 * 1024): Buffer[] {
   if (buf.length <= targetChunkBytes * 1.15) {
     return [buf];
   }
@@ -331,8 +509,7 @@ export function splitMp3BufferByFrames(buf: Buffer, targetChunkBytes = 650 * 102
   while (offset < buf.length) {
     let nextEnd = Math.min(buf.length, offset + targetChunkBytes);
     if (nextEnd < buf.length) {
-      // Scan forward up to 8KB to find an MP3 frame sync word (0xFF followed by 0xE0..0xFF)
-      const searchLimit = Math.min(buf.length - 2, nextEnd + 8192);
+      const searchLimit = Math.min(buf.length - 2, nextEnd + 16384);
       for (let pos = nextEnd; pos < searchLimit; pos++) {
         if (buf[pos] === 0xff && (buf[pos + 1] & 0xe0) === 0xe0) {
           nextEnd = pos;
@@ -357,7 +534,8 @@ export async function transcribeSingleSegmentPublic(
   totalSegments: number,
   bookTitle: string,
   lessonTitle: string,
-  speakerName: string
+  speakerName: string,
+  previousContextTail = ''
 ): Promise<ParsedSegmentPage[]> {
   try {
     return await transcribeSingleSegment(
@@ -367,15 +545,16 @@ export async function transcribeSingleSegmentPublic(
       totalSegments,
       bookTitle,
       lessonTitle,
-      speakerName
+      speakerName,
+      previousContextTail
     );
   } catch (firstErr) {
-    // If segment was too dense and overflowed output tokens, split buffer in half in memory and transcribe both halves
     if (segmentBuffer.length > 350 * 1024) {
       const halfTarget = Math.ceil(segmentBuffer.length / 2);
       const subBuffers = splitMp3BufferByFrames(segmentBuffer, halfTarget);
       if (subBuffers.length > 1) {
         const combined: ParsedSegmentPage[] = [];
+        let rollingTail = previousContextTail;
         for (const subBuf of subBuffers) {
           const pages = await transcribeSingleSegment(
             subBuf,
@@ -384,9 +563,14 @@ export async function transcribeSingleSegmentPublic(
             totalSegments,
             bookTitle,
             lessonTitle,
-            speakerName
+            speakerName,
+            rollingTail
           );
           combined.push(...pages);
+          const lastP = pages[pages.length - 1];
+          if (lastP && Array.isArray(lastP.paragraphs)) {
+            rollingTail = lastP.paragraphs.slice(-2).join(' ');
+          }
         }
         if (combined.length > 0) {
           return combined;
@@ -453,7 +637,6 @@ export function buildBookPagesFromParsed(
     });
   }
 
-  // Flatten all segment outputs into an ordered stream of blocks and pack into full A4 pages (~1,150-1,380 chars)
   const streamBlocks: BookPageData['blocks'] = [];
   if (mode === 'new') {
     streamBlocks.push({
@@ -546,7 +729,6 @@ export function buildBookPagesFromParsed(
     }
   }
 
-  // If the trailing page is very short (< 380 chars) and there is a previous content page, merge it so the last page is also full
   if (currentBlocks.length > 0) {
     const lastBookPage = bookPages[bookPages.length - 1];
     const lastIsCover = lastBookPage?.blocks.some((bl) => bl.type === 'cover');
@@ -584,7 +766,6 @@ export async function runServerAudioToBookWorker(
     let segmentBuffers: { buf: Buffer; mime: string }[] = [];
     let durationSec = Math.max(60, Math.round((audioBuffer.length / (1024 * 1024)) * 90));
 
-    // Try splitting via ffmpeg in writable tmp directory first; if unavailable or read-only, split in memory
     try {
       ensureAudioDataDir();
       if (!fs.existsSync(jobWorkDir)) {
@@ -596,7 +777,9 @@ export async function runServerAudioToBookWorker(
       fs.writeFileSync(rawInputPath, audioBuffer);
 
       job.progressPercent = 22;
-      job.statusMessage = `دابەشکرنا دەنگی بۆ پشکێن بلەز (${toEasternArabic(22)}٪)...`;
+      job.statusMessage = `پاقژکرن و ئامادەکرنا دەنگی ب کوالێتیا 32kHz / 128kbps بۆ نڤیسینا پیت ب پیت (${toEasternArabic(
+        22
+      )}٪)...`;
       job.updatedAt = Date.now();
       persistAudioJobsStore();
 
@@ -614,7 +797,7 @@ export async function runServerAudioToBookWorker(
     }
 
     if (segmentBuffers.length === 0) {
-      const memChunks = splitMp3BufferByFrames(audioBuffer, 2200 * 1024);
+      const memChunks = splitMp3BufferByFrames(audioBuffer, 1100 * 1024);
       const effectiveMime =
         job.fileName.toLowerCase().endsWith('.mp3') || memChunks.length > 1
           ? 'audio/mp3'
@@ -623,87 +806,88 @@ export async function runServerAudioToBookWorker(
     }
 
     const totalSegs = segmentBuffers.length;
-    const CONCURRENCY = 6; // Process up to 6 segments simultaneously for fast throughput
     job.totalSegments = totalSegs;
     job.audioDurationSec = durationSec;
-    job.estimatedTotalSec = Math.max(10, Math.ceil(totalSegs / CONCURRENCY) * 11);
+    job.estimatedTotalSec = Math.max(20, totalSegs * 24);
     job.progressPercent = 25;
     job.statusMessage = `دەنگ هاتە دابەشکرن بۆ ${toEasternArabic(
       totalSegs
-    )} پشکان — نڤیسینا بلەز دەستپێکر (${toEasternArabic(25)}٪)...`;
+    )} پشکێن هویر — گوهداریا دوو-جارکی و نڤیسینا پیت ب پیت دەستپێکر (${toEasternArabic(25)}٪)...`;
     job.updatedAt = Date.now();
     persistAudioJobsStore();
 
     const segmentResults: (ParsedSegmentPage[] | null)[] = new Array(totalSegs).fill(null);
+    let rollingContextTail = '';
 
-    for (let i = 0; i < totalSegs; i += CONCURRENCY) {
+    // Process 100% sequentially so every segment has full rolling context and double audio-grounded verification
+    for (let segIdx = 0; segIdx < totalSegs; segIdx++) {
       const currentJob = store.get(jobId);
       if (!currentJob || currentJob.status === 'stopped') break;
 
-      const batchIndices: number[] = [];
-      for (let j = i; j < Math.min(totalSegs, i + CONCURRENCY); j++) {
-        batchIndices.push(j);
-      }
-
-      const startBatchPct = Math.min(
+      const startSegPct = Math.min(
         96,
-        Math.max(currentJob.progressPercent || 25, 25 + Math.round((i / Math.max(1, totalSegs)) * 72))
+        Math.max(
+          currentJob.progressPercent || 25,
+          25 + Math.round((segIdx / Math.max(1, totalSegs)) * 72)
+        )
       );
-      currentJob.progressPercent = startBatchPct;
+      currentJob.progressPercent = startSegPct;
       currentJob.statusMessage = `پشکا ${toEasternArabic(
-        batchIndices[0] + 1
-      )} هەتا ${toEasternArabic(
-        batchIndices[batchIndices.length - 1] + 1
-      )} ژ ${toEasternArabic(totalSegs)} پەیڤ ب پەیڤ دهێتە نڤیسین (${toEasternArabic(
-        startBatchPct
-      )}٪)...`;
+        segIdx + 1
+      )} ژ ${toEasternArabic(
+        totalSegs
+      )}: گوهداریا کویر و پشکنینا پیت ب پیت ل دویڤ دەنگی (${toEasternArabic(startSegPct)}٪)...`;
       currentJob.updatedAt = Date.now();
       persistAudioJobsStore();
 
-      await Promise.all(
-        batchIndices.map(async (segIdx) => {
-          const segItem = segmentBuffers[segIdx];
-          const pagesForSeg = await transcribeSingleSegmentPublic(
-            segItem.buf,
-            segItem.mime,
-            segIdx,
-            totalSegs,
-            currentJob.bookTitle,
-            currentJob.lessonTitle,
-            currentJob.speakerName
-          );
-          segmentResults[segIdx] = pagesForSeg;
-
-          const latestJob = store.get(jobId);
-          if (latestJob) {
-            latestJob.doneSegments = segmentResults.filter((r) => r !== null).length;
-            const orderedPagesSoFar: ParsedSegmentPage[] = [];
-            for (const r of segmentResults) {
-              if (r) orderedPagesSoFar.push(...r);
-            }
-            latestJob.pages = buildBookPagesFromParsed(
-              orderedPagesSoFar,
-              latestJob.mode,
-              latestJob.startPageNumber,
-              latestJob.bookTitle,
-              latestJob.lessonTitle,
-              latestJob.speakerName
-            );
-            const pct = Math.min(
-              98,
-              25 + Math.round((latestJob.doneSegments / Math.max(1, totalSegs)) * 73)
-            );
-            latestJob.progressPercent = Math.max(latestJob.progressPercent || 25, pct);
-            latestJob.statusMessage = `پشکا ${toEasternArabic(
-              latestJob.doneSegments
-            )} ژ ${toEasternArabic(totalSegs)} تەمام بوو (${toEasternArabic(
-              latestJob.progressPercent
-            )}٪ — ${toEasternArabic(latestJob.pages.length)} لاپەر)...`;
-            latestJob.updatedAt = Date.now();
-            persistAudioJobsStore();
-          }
-        })
+      const segItem = segmentBuffers[segIdx];
+      const pagesForSeg = await transcribeSingleSegmentPublic(
+        segItem.buf,
+        segItem.mime,
+        segIdx,
+        totalSegs,
+        currentJob.bookTitle,
+        currentJob.lessonTitle,
+        currentJob.speakerName,
+        rollingContextTail
       );
+      segmentResults[segIdx] = pagesForSeg;
+
+      const lastP = pagesForSeg[pagesForSeg.length - 1];
+      if (lastP && Array.isArray(lastP.paragraphs)) {
+        rollingContextTail = lastP.paragraphs.slice(-2).join(' ');
+      }
+
+      const latestJob = store.get(jobId);
+      if (latestJob) {
+        latestJob.doneSegments = segmentResults.filter((r) => r !== null).length;
+        const orderedPagesSoFar: ParsedSegmentPage[] = [];
+        for (const r of segmentResults) {
+          if (r) orderedPagesSoFar.push(...r);
+        }
+        latestJob.pages = buildBookPagesFromParsed(
+          orderedPagesSoFar,
+          latestJob.mode,
+          latestJob.startPageNumber,
+          latestJob.bookTitle,
+          latestJob.lessonTitle,
+          latestJob.speakerName
+        );
+        const pct = Math.min(
+          98,
+          25 + Math.round((latestJob.doneSegments / Math.max(1, totalSegs)) * 73)
+        );
+        latestJob.progressPercent = Math.max(latestJob.progressPercent || 25, pct);
+        latestJob.statusMessage = `پشکا ${toEasternArabic(
+          latestJob.doneSegments
+        )} ژ ${toEasternArabic(
+          totalSegs
+        )} ب پشکنینا دوو-جارکی پیت ب پیت هاتە نڤیسین (${toEasternArabic(
+          latestJob.progressPercent
+        )}٪ — ${toEasternArabic(latestJob.pages.length)} لاپەر)...`;
+        latestJob.updatedAt = Date.now();
+        persistAudioJobsStore();
+      }
     }
 
     const finalJob = store.get(jobId);
@@ -724,7 +908,7 @@ export async function runServerAudioToBookWorker(
       finalJob.progressPercent = 100;
       finalJob.status = 'completed';
       finalJob.error = undefined;
-      finalJob.statusMessage = `دەنگ ب تەمامی هاتە نڤیسین و رێکخستن (١٠٠٪ — ${toEasternArabic(
+      finalJob.statusMessage = `دەنگ ب پشکنینا دوو-جارکی پیت ب پیت و نەفسی دەنگی بوو پەرتووک (١٠٠٪ — ${toEasternArabic(
         finalJob.pages.length
       )} لاپەر)!`;
       finalJob.updatedAt = Date.now();
@@ -751,4 +935,3 @@ export async function runServerAudioToBookWorker(
     }
   }
 }
-

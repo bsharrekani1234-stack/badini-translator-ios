@@ -773,6 +773,49 @@ export function renderBookPageToCanvas(
   ctx.restore();
 }
 
+function normalizeBadiniTextForExport(text: string, preserveQuranic = true): string {
+  if (!text) return '';
+  let out = text
+    .replace(/ك/g, 'ک')
+    .replace(/ي/g, 'ی')
+    .replace(/ى/g, 'ی')
+    .replace(/\u200c+/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ');
+  if (preserveQuranic) {
+    out = out.replace(/﴿\s*/g, '﴿ ').replace(/\s*﴾/g, ' ﴾');
+  }
+  return out.trim();
+}
+
+function normalizeBookPagesForExport(
+  pages: BookPageData[],
+  shouldNormalize = true,
+  preserveQuranic = true
+): BookPageData[] {
+  if (!shouldNormalize) return pages;
+  return pages.map((p) => ({
+    ...p,
+    blocks: p.blocks.map((b) => {
+      if (b.type === 'paragraph' || b.type === 'heading') {
+        return {
+          ...b,
+          text: normalizeBadiniTextForExport(b.text, preserveQuranic),
+        };
+      }
+      if (b.type === 'cover') {
+        return {
+          ...b,
+          kicker: normalizeBadiniTextForExport(b.kicker, preserveQuranic),
+          titleLines: b.titleLines.map((l) => normalizeBadiniTextForExport(l, preserveQuranic)),
+          verse: normalizeBadiniTextForExport(b.verse, preserveQuranic),
+        };
+      }
+      return b;
+    }),
+    footnotes: p.footnotes?.map((fn) => normalizeBadiniTextForExport(fn, preserveQuranic)),
+  }));
+}
+
 /**
  * Generates a complete multi-page PDF matching the exact [595 x 842] pt
  * page dimensions and typography of the book, returning the PDF Blob
@@ -787,6 +830,10 @@ export async function generateAndDownloadBookPdf(
     scale?: number;
     headerTitle?: string;
     design?: BookDesignConfig;
+    dialect?: 'badini-authentic';
+    normalizeKurdishOrthography?: boolean;
+    lineSpacing?: BookDesignConfig['lineSpacing'];
+    preserveQuranicBrackets?: boolean;
     skipAutoSave?: boolean;
     onProgress?: (current: number, total: number) => void;
   } = {}
@@ -798,9 +845,21 @@ export async function generateAndDownloadBookPdf(
     scale = 2,
     headerTitle = BOOK_HEADER_TITLE,
     design = DEFAULT_BOOK_DESIGN,
+    normalizeKurdishOrthography = true,
+    lineSpacing,
+    preserveQuranicBrackets = true,
     skipAutoSave = false,
     onProgress,
   } = options;
+
+  const effectiveDesign: BookDesignConfig = lineSpacing
+    ? { ...design, lineSpacing }
+    : design;
+  const normalizedPages = normalizeBookPagesForExport(
+    pages,
+    normalizeKurdishOrthography,
+    preserveQuranicBrackets
+  );
 
   if (typeof document !== 'undefined' && 'fonts' in document) {
     try {
@@ -819,8 +878,8 @@ export async function generateAndDownloadBookPdf(
 
   const offscreenCanvas = document.createElement('canvas');
 
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i];
+  for (let i = 0; i < normalizedPages.length; i++) {
+    const page = normalizedPages[i];
     if (i > 0) {
       pdf.addPage([PDF_WIDTH_PT, PDF_HEIGHT_PT], 'portrait');
     }
@@ -829,8 +888,8 @@ export async function generateAndDownloadBookPdf(
       scale,
       fontSizePt,
       fontFamily,
-      headerTitle,
-      design,
+      headerTitle: normalizeBadiniTextForExport(headerTitle, preserveQuranicBrackets),
+      design: effectiveDesign,
     });
 
     const imgData = offscreenCanvas.toDataURL('image/jpeg', 0.92);

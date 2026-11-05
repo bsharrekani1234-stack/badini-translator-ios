@@ -10,18 +10,19 @@ export const aiClient = new GoogleGenAI({
 });
 
 /**
- * Prioritizes gemini-3.8-flash with deep thinking across Book Translation, Audio-to-Book, and Smart Assistant,
- * with automatic sub-second failover to gemini-3-flash-preview and gemini-3.1-flash-lite-preview if 3.8-flash is congested.
+ * Exclusively uses flagship deep-thinking models (Gemini 4 Argon, 3.1 Pro, 3 Flash, 3.8 Flash)
+ * with ThinkingLevel.HIGH for scholarly Book Translation, Audio-to-Book, and Smart Assistant.
+ * Never falls back to flash-lite models so translation and audio accuracy remain at peak scholarly quality.
  */
 export const RESILIENT_MODELS = [
-  'gemini-3.8-flash',
+  'gemini-4-argon',
+  'gemini-3.1-pro-preview',
+  'gemini-3-pro-preview',
   'gemini-3-flash-preview',
-  'gemini-3.1-flash-lite-preview',
-  'gemini-3.1-flash-lite',
+  'gemini-3.8-flash',
 ] as const;
 
 declare global {
-  // eslint-disable-next-line no-var
   var __badiniModelCooldownUntil: Map<string, number> | undefined;
 }
 
@@ -213,10 +214,10 @@ export async function generateContentResilient(
     preferredModels?: readonly string[];
     fastMode?: boolean;
   },
-  maxAttempts = 10
+  maxAttempts = 12
 ): Promise<GenerateContentResponse> {
   const modelsPool =
-    params.preferredModels && params.preferredModels.length > 1
+    params.preferredModels && params.preferredModels.length > 0
       ? params.preferredModels
       : RESILIENT_MODELS;
   const cooldownMap = getModelCooldownMap();
@@ -237,8 +238,10 @@ export async function generateContentResilient(
       const isFlash38 = modelName === 'gemini-3.8-flash';
       const supportsThinkingLevel =
         isFlash38 ||
-        modelName === 'gemini-3-flash-preview' ||
-        modelName === 'gemini-3.1-flash-lite-preview';
+        modelName === 'gemini-4-argon' ||
+        modelName === 'gemini-3.1-pro-preview' ||
+        modelName === 'gemini-3-pro-preview' ||
+        modelName === 'gemini-3-flash-preview';
       const baseConfig = { ...(params.config || {}) };
 
       if (isFlash38) {
@@ -254,21 +257,20 @@ export async function generateContentResilient(
 
       if (supportsThinkingLevel) {
         baseConfig.thinkingConfig = {
-          thinkingLevel: params.fastMode ? ThinkingLevel.LOW : ThinkingLevel.HIGH,
+          thinkingLevel: ThinkingLevel.HIGH,
         };
       } else {
         delete baseConfig.thinkingConfig;
       }
 
-      // Keep 3.8-flash timeout tight (8.5s for fastMode, 14s for batch) so if 3.8-flash is congested,
-      // we fail over immediately before any 30s reverse-proxy gateway timeout can occur.
-      const perAttemptTimeoutMs = isFlash38
-        ? params.fastMode
-          ? 8500
-          : 14000
-        : params.fastMode
-        ? 14000
-        : 24000;
+      // Give deep-thinking letter-by-letter audio-to-book and book translation up to 150s per attempt so reasoning is never rushed
+      const perAttemptTimeoutMs = params.fastMode
+        ? isFlash38
+          ? 35000
+          : 50000
+        : isFlash38
+        ? 110000
+        : 150000;
 
       const response = await Promise.race([
         aiClient.models.generateContent({
@@ -316,21 +318,22 @@ export async function generateContentResilient(
         continue;
       }
 
-      // Daily quota limit on this specific model -> 30 min cooldown, switch immediately
+      // Daily quota limit or permission/billing restriction on this specific model -> 30 min cooldown, switch immediately
       if (
         errStr.includes('GenerateRequestsPerDayPerProjectPerModel') ||
         errStr.includes('free_tier_requests') ||
-        errStr.includes('per day limit exceeded')
+        errStr.includes('per day limit exceeded') ||
+        errStr.includes('403') ||
+        errStr.includes('PERMISSION_DENIED') ||
+        errStr.includes('billing')
       ) {
         cooldownMap.set(modelName, Date.now() + 30 * 60 * 1000);
-        await sleep(100);
         continue;
       }
 
       // Deprecated/404 model -> 24h cooldown
       if (errStr.includes('404') || errStr.includes('no longer available') || errStr.includes('not found')) {
         cooldownMap.set(modelName, Date.now() + 24 * 60 * 60 * 1000);
-        await sleep(100);
         continue;
       }
 
@@ -347,7 +350,7 @@ export async function generateContentResilient(
 
       // RPM 429 or 503 transient errors -> immediate switch to next model
       if (errStr.includes('429') || errStr.includes('503') || errStr.includes('UNAVAILABLE')) {
-        cooldownMap.set(modelName, Date.now() + 30000);
+        cooldownMap.set(modelName, Date.now() + 25000);
         await sleep(150);
         continue;
       }

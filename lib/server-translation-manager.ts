@@ -322,8 +322,8 @@ export async function runServerTranslationWorker(jobId: string, pdfBytes: Uint8A
     const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     const existingPageNums = new Set(job.pages.map((p) => p.pageNumber));
 
-    // Pack 5 pages per API call with 2 concurrent workers (10 pages at a time, using 60% fewer quota requests!)
-    const BATCH_SIZE = 5;
+    // Pack 2 pages per API call for maximum deep-thinking scholarly translation precision
+    const BATCH_SIZE = 2;
     const CONCURRENCY = 2;
 
     const allBatches: number[][] = [];

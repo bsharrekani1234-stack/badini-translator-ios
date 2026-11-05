@@ -43,6 +43,7 @@ export async function POST(req: NextRequest) {
     let bookTitle = 'پەرتووکا دەنگی یا رێکخستی';
     let lessonTitle = '';
     let speakerName = 'مامۆستا';
+    let previousContextTail = '';
     let mode: 'new' | 'append' = 'new';
     let startPageNumber = 1;
 
@@ -61,6 +62,7 @@ export async function POST(req: NextRequest) {
       bookTitle = String(body.bookTitle || 'پەرتووکا دەنگی یا رێکخستی').trim();
       lessonTitle = String(body.lessonTitle || '').trim();
       speakerName = String(body.speakerName || 'مامۆستا').trim();
+      previousContextTail = String(body.previousContextTail || '').trim();
       mode = (body.mode === 'append' ? 'append' : 'new') as 'new' | 'append';
       const rawStart = Number(body.startPageNumber || 1);
       startPageNumber = Number.isFinite(rawStart) && rawStart >= 1 ? rawStart : 1;
@@ -87,6 +89,8 @@ export async function POST(req: NextRequest) {
         (formData.get('bookTitle') as string | null)?.trim() || 'پەرتووکا دەنگی یا رێکخستی';
       lessonTitle = (formData.get('lessonTitle') as string | null)?.trim() || '';
       speakerName = (formData.get('speakerName') as string | null)?.trim() || 'مامۆستا';
+      previousContextTail =
+        (formData.get('previousContextTail') as string | null)?.trim() || '';
       mode = ((formData.get('mode') as string | null)?.trim() === 'append'
         ? 'append'
         : 'new') as 'new' | 'append';
@@ -94,7 +98,7 @@ export async function POST(req: NextRequest) {
       startPageNumber = Number.isFinite(rawStart) && rawStart >= 1 ? rawStart : 1;
     }
 
-    // Direct stateless segment transcription (works 100% reliably on Vercel /var/task & multi-instance serverless)
+    // Direct stateless segment transcription (with rolling context tail for seamless multi-segment continuity)
     if (action === 'transcribe-segment') {
       const segBuf = chunkBuffer || directFileBuffer;
       if (!segBuf || segBuf.length === 0) {
@@ -107,7 +111,8 @@ export async function POST(req: NextRequest) {
         totalSegments,
         bookTitle,
         lessonTitle || bookTitle,
-        speakerName
+        speakerName,
+        previousContextTail
       );
       return NextResponse.json({ ok: true, segmentIndex: chunkIndex, pages });
     }

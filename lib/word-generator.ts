@@ -57,6 +57,24 @@ export interface WordExportOptions {
   fontFamily?: string;
   headerTitle?: string;
   design?: BookDesignConfig;
+  dialect?: 'badini-authentic';
+  normalizeKurdishOrthography?: boolean;
+  lineSpacing?: BookDesignConfig['lineSpacing'];
+  preserveQuranicBrackets?: boolean;
+}
+
+function normalizeBadiniWordText(text: string, preserveQuranic = true): string {
+  if (!text) return '';
+  let out = text
+    .replace(/ك/g, 'ک')
+    .replace(/ي/g, 'ی')
+    .replace(/ى/g, 'ی')
+    .replace(/\u200c+/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ');
+  if (preserveQuranic) {
+    out = out.replace(/﴿\s*/g, '﴿ ').replace(/\s*﴾/g, ' ﴾');
+  }
+  return out.trim();
 }
 
 /**
@@ -75,15 +93,45 @@ export function generateBookWordBlob(
     fontSizePt = 15,
     fontFamily = '"Amiri", "Noto Naskh Arabic", "Traditional Arabic", serif',
     headerTitle = BOOK_HEADER_TITLE,
-    design = DEFAULT_BOOK_DESIGN,
+    design: rawDesign = DEFAULT_BOOK_DESIGN,
+    normalizeKurdishOrthography = true,
+    lineSpacing,
+    preserveQuranicBrackets = true,
   } = options;
+
+  const design: BookDesignConfig = lineSpacing ? { ...rawDesign, lineSpacing } : rawDesign;
+  const normalizedPages: BookPageData[] = normalizeKurdishOrthography
+    ? pages.map((p) => ({
+        ...p,
+        blocks: p.blocks.map((b) => {
+          if (b.type === 'paragraph' || b.type === 'heading') {
+            return { ...b, text: normalizeBadiniWordText(b.text, preserveQuranicBrackets) };
+          }
+          if (b.type === 'cover') {
+            return {
+              ...b,
+              kicker: normalizeBadiniWordText(b.kicker, preserveQuranicBrackets),
+              titleLines: b.titleLines.map((l) =>
+                normalizeBadiniWordText(l, preserveQuranicBrackets)
+              ),
+              verse: normalizeBadiniWordText(b.verse, preserveQuranicBrackets),
+            };
+          }
+          return b;
+        }),
+        footnotes: p.footnotes?.map((fn) => normalizeBadiniWordText(fn, preserveQuranicBrackets)),
+      }))
+    : pages;
 
   const { headingHex, verseHex, bodyHex, paperHex, frameHex } = resolveEffectiveColors(design);
   const colors = { headingHex, verseHex, bodyHex };
   const coverCfg = design.cover || DEFAULT_BOOK_DESIGN.cover;
   const frameStyle = design.frameStyle || 'classic-scholarly';
   const headerStyle = design.headerStyle || 'classic-line';
-  const effectiveHeaderTitle = design.customHeaderTitle?.trim() || headerTitle || BOOK_HEADER_TITLE;
+  const effectiveHeaderTitle = normalizeBadiniWordText(
+    design.customHeaderTitle?.trim() || headerTitle || BOOK_HEADER_TITLE,
+    preserveQuranicBrackets
+  );
 
   const cleanFontName =
     fontFamily
@@ -93,8 +141,8 @@ export function generateBookWordBlob(
 
   const pagesOutputHtml: string[] = [];
 
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i];
+  for (let i = 0; i < normalizedPages.length; i++) {
+    const page = normalizedPages[i];
     const pageNumStr = toEasternArabicNumerals(page.pageNumber);
     const isOdd = page.pageNumber % 2 === 1;
     const hasCoverBlock = page.blocks.some((b) => b.type === 'cover');
