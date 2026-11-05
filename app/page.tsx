@@ -69,6 +69,7 @@ import {
   toEasternArabicNumerals,
 } from '@/lib/book-types';
 import { motion, AnimatePresence } from 'motion/react';
+import { SegmentedControl, Input } from 'glisse';
 import { BookPageSheet } from '@/components/BookPageSheet';
 import LiquidGlassNav from '@/components/LiquidGlassNav';
 import { generateAndDownloadBookPdf } from '@/lib/pdf-generator';
@@ -254,6 +255,10 @@ export default function BadiniBookTranslatorPage() {
   const [designSubTab, setDesignSubTab] = useState<'bot' | 'colors' | 'cover' | 'interior'>('bot');
 
   // Reader & Navigation state
+  const [mounted, setMounted] = useState<boolean>(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [viewMode, setViewMode] = useState<ViewMode>('single');
   const [fontSizePt, setFontSizePt] = useState<number>(15.5);
@@ -4051,24 +4056,24 @@ export default function BadiniBookTranslatorPage() {
     <div
       className="spatial-scene relative min-h-screen w-full text-white overflow-x-hidden flex items-center justify-center p-2 sm:p-6 lg:p-8 pb-20 md:pb-8"
     >
-      {/* High-Resolution Warm Luxury Living Room Ambient Background (Seamless behind 10% Glass Blur) */}
+      {/* High-Resolution Warm Scholarly Library Ambient Background (No Portraits/People) */}
       <div
         aria-hidden="true"
-        className="no-print fixed inset-0 pointer-events-none z-0 overflow-hidden bg-[#b8a58e]"
+        className="no-print fixed inset-0 pointer-events-none z-0 overflow-hidden bg-[#2b221a]"
       >
         <div
           className="absolute inset-0 bg-cover bg-center scale-105"
           style={{
             backgroundImage:
-              "url('https://images.unsplash.com/photo-1600210492486-724fe5c67fb0?q=85&w=2200&auto=format&fit=crop')",
+              "url('https://images.unsplash.com/photo-1507842229356-51c61504d3ab?q=85&w=2200&auto=format&fit=crop')",
           }}
         />
-        {/* Warm Ambient Sunlight & Floor Lamp Glow */}
+        {/* Warm Ambient Golden Library Glow */}
         <div
           className="absolute inset-0"
           style={{
             background:
-              'radial-gradient(circle at 82% 24%, rgba(255, 200, 125, 0.35) 0%, transparent 50%), linear-gradient(180deg, rgba(28, 24, 20, 0.28) 0%, rgba(18, 15, 12, 0.42) 100%)',
+              'radial-gradient(circle at 82% 24%, rgba(255, 200, 125, 0.32) 0%, transparent 52%), linear-gradient(180deg, rgba(24, 19, 15, 0.42) 0%, rgba(14, 11, 9, 0.56) 100%)',
           }}
         />
       </div>
@@ -4859,58 +4864,39 @@ export default function BadiniBookTranslatorPage() {
                         </button>
                       </div>
 
-                      {/* View Mode Switcher with Sliding Pill */}
-                      <div className="hidden sm:flex items-center gap-1 bg-black/35 p-1 rounded-full border border-white/12">
-                        {(
-                          [
-                            { id: 'single' as const, label: 'تاک لاپەر', hideBelowLg: false },
-                            { id: 'spread' as const, label: 'دوو لاپەر', hideBelowLg: true },
-                            ...(activeBook.originalPdfUrl
-                              ? [{ id: 'compare' as const, label: 'بەراوردکرن', hideBelowLg: false }]
-                              : []),
-                          ]
-                        ).map((vm) => {
-                          const isVmActive = viewMode === vm.id;
-                          return (
-                            <button
-                              key={vm.id}
-                              type="button"
-                              onClick={() => setViewMode(vm.id)}
-                              className={`${
-                                vm.hideBelowLg ? 'hidden lg:inline-flex' : 'inline-flex'
-                              } relative px-3 py-1 text-xs font-heading font-bold rounded-full transition-colors cursor-pointer whitespace-nowrap ${
-                                isVmActive ? 'text-white' : 'text-white/60 hover:text-white'
-                              }`}
-                            >
-                              {isVmActive && (
-                                <motion.div
-                                  layoutId="readerViewModePill"
-                                  transition={{ type: 'spring', stiffness: 400, damping: 32 }}
-                                  className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-500 to-blue-600 shadow-xs"
-                                />
-                              )}
-                              <span className="relative z-10 flex items-center gap-1">
-                                {vm.id === 'compare' && <Columns className="w-3.5 h-3.5 inline" />}
-                                {vm.label}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      {/* View Mode Switcher using Official glisse SegmentedControl */}
+                      {mounted && (
+                        <div className="hidden sm:flex items-center">
+                          <SegmentedControl
+                            aria-label="View Mode"
+                            items={[
+                              { value: 'single', label: 'تاک لاپەڕ' },
+                              { value: 'double', label: 'دوو لاپەڕ' },
+                              { value: 'compare', label: 'بەراوردکرن' },
+                            ]}
+                            value={viewMode === 'spread' ? 'double' : viewMode}
+                            onValueChange={(val) =>
+                              setViewMode(val === 'double' ? 'spread' : (val as ViewMode))
+                            }
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Quick In-Book Search & Chapter Jump Strip */}
+                  {/* Quick In-Book Search & Chapter Jump Strip using Official glisse Input */}
                   <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-white/10">
                     <div className="relative flex-1 min-w-[180px]">
-                      <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/50" />
-                      <input
-                        type="text"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="گەران د ناڤ لاپەرێن پەرتووکێ دا..."
-                        className="w-full pr-9 pl-3 py-1.5 text-xs bg-black/35 border border-white/12 rounded-full font-subtext text-white placeholder:text-white/45 focus:outline-none focus:border-blue-300"
-                      />
+                      {mounted && (
+                        <Input
+                          type="search"
+                          aria-label="Search"
+                          placeholder="گەڕیان..."
+                          icon={<Search size={16} />}
+                          value={searchQuery}
+                          onValueChange={setSearchQuery}
+                        />
+                      )}
                     </div>
                     {activeBookToc.length > 0 && (
                       <select
