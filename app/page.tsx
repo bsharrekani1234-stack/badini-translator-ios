@@ -1617,13 +1617,12 @@ export default function BadiniBookTranslatorPage() {
     return uploadId;
   };
 
-  // Split MP3 or decode other large audio files in browser memory into compact ~650KB segments so each segment
-  // uploads in <0.4s and transcribes in 3-5s (never choking mobile upload bandwidth or hitting proxy timeouts)
+  // High-clarity fallback segmentation in browser memory (~2.4MB MP3 or 16000Hz mono WAV segments)
   const prepareClientAudioSegments = async (
     file: File,
     fileBytes: Uint8Array
   ): Promise<{ bytes: Uint8Array; mimeType: string }[]> => {
-    const TARGET_CHUNK_BYTES = 650 * 1024; // ~650 KB per segment (~45-60s of speech)
+    const TARGET_CHUNK_BYTES = 2400 * 1024; // ~2.4 MB per segment (~3.5-4.5 minutes of speech for full context)
     const lowerName = file.name.toLowerCase();
     const isMp3 =
       lowerName.endsWith('.mp3') || file.type === 'audio/mpeg' || file.type === 'audio/mp3';
@@ -1643,7 +1642,7 @@ export default function BadiniBookTranslatorPage() {
       while (offset < fileBytes.byteLength) {
         let nextEnd = Math.min(fileBytes.byteLength, offset + TARGET_CHUNK_BYTES);
         if (nextEnd < fileBytes.byteLength) {
-          const searchLimit = Math.min(fileBytes.byteLength - 2, nextEnd + 8192);
+          const searchLimit = Math.min(fileBytes.byteLength - 2, nextEnd + 16384);
           for (let pos = nextEnd; pos < searchLimit; pos++) {
             if (fileBytes[pos] === 0xff && (fileBytes[pos + 1] & 0xe0) === 0xe0) {
               nextEnd = pos;
@@ -1663,7 +1662,7 @@ export default function BadiniBookTranslatorPage() {
       return chunks;
     }
 
-    // For .m4a / .wav / .ogg / .aac (> 750 KB), decode via Web Audio API into 55-second 8000Hz mono WAV segments (~880KB each)
+    // For .m4a / .wav / .ogg / .aac, decode via Web Audio API into 120-second 16000Hz mono WAV segments (preserving full Kurdish/Arabic consonant clarity)
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -1672,9 +1671,9 @@ export default function BadiniBookTranslatorPage() {
         const ctx = new AudioCtx();
         const decoded = await ctx.decodeAudioData(fileBytes.slice().buffer as ArrayBuffer);
         void ctx.close();
-        const targetRate = 8000;
+        const targetRate = 16000;
         const totalDuration = decoded.duration;
-        const segDuration = 55; // 55 seconds per WAV segment (~880 KB at 8000Hz 16-bit mono)
+        const segDuration = 120; // 120 seconds (2 minutes) per WAV segment at 16000Hz 16-bit mono
         const numSegs = Math.max(1, Math.ceil(totalDuration / segDuration));
         const srcData = decoded.getChannelData(0);
         const srcRate = decoded.sampleRate;
@@ -2119,175 +2118,10 @@ export default function BadiniBookTranslatorPage() {
         const effectiveSpeaker = audioSpeakerInput.trim() || 'مامۆستا مەلا رەمەزان';
 
         const fileBytes = new Uint8Array(await file.arrayBuffer());
-        const clientSegments = await prepareClientAudioSegments(file, fileBytes);
-
         let returnedPages: BookPageData[] = [];
 
-        if (clientSegments.length > 0) {
-          const totalSegs = clientSegments.length;
-          const segResults: ({ heading?: string; paragraphs: string[] }[] | null)[] = new Array(
-            totalSegs
-          ).fill(null);
-          let completedSegs = 0;
-
-          setAudioProgressPercent(10);
-          setAudioConvertStatus(
-            `دەنگ هاتە دابەشکرن بۆ ${toEasternArabicNumerals(
-              totalSegs
-            )} پشکێن بلەز — نڤیسین دەستپێکر (${toEasternArabicNumerals(10)}٪)...`
-          );
-
-          const transcribeBufferWithAutoSplit = async (
-            segBytes: Uint8Array,
-            segMime: string,
-            segIdx: number,
-            splitDepth = 0
-          ): Promise<{ heading?: string; paragraphs: string[] }[]> => {
-            let lastErr: unknown = null;
-            const maxDirectAttempts = splitDepth === 0 ? 3 : 5;
-
-            for (let attempt = 0; attempt < maxDirectAttempts; attempt++) {
-              try {
-                let res: Response;
-                if (attempt % 2 === 0) {
-                  const fd = new FormData();
-                  fd.append('action', 'transcribe-segment');
-                  fd.append('chunkIndex', String(segIdx));
-                  fd.append('totalSegments', String(totalSegs));
-                  fd.append('fileName', file.name);
-                  fd.append('mimeType', segMime);
-                  fd.append('bookTitle', effectiveBookTitle);
-                  fd.append('lessonTitle', computedLessonTitle);
-                  fd.append('speakerName', effectiveSpeaker);
-                  fd.append(
-                    'chunk',
-                    new Blob([segBytes.slice().buffer as ArrayBuffer], {
-                      type: segMime,
-                    }),
-                    `seg_${segIdx}.${segMime.includes('wav') ? 'wav' : 'mp3'}`
-                  );
-
-                  res = await fetch('/api/audio-to-book', {
-                    method: 'POST',
-                    body: fd,
-                  });
-                } else {
-                  const chunkBase64 = uint8SliceToBase64(segBytes);
-                  res = await fetch('/api/audio-to-book', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      action: 'transcribe-segment',
-                      chunkIndex: segIdx,
-                      totalSegments: totalSegs,
-                      fileName: file.name,
-                      mimeType: segMime,
-                      bookTitle: effectiveBookTitle,
-                      lessonTitle: computedLessonTitle,
-                      speakerName: effectiveSpeaker,
-                      chunkBase64,
-                    }),
-                  });
-                }
-
-                const parsed = await safeParseJson(res);
-                if (!res.ok || parsed.error || !Array.isArray(parsed.pages)) {
-                  throw new Error(parsed.error || 'شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
-                }
-                return parsed.pages as { heading?: string; paragraphs: string[] }[];
-              } catch (err) {
-                lastErr = err;
-                // Warm up connection / auth cookie before retrying
-                await fetch('/api/audio-to-book?ping=1', { cache: 'no-store' }).catch(() => {});
-                await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-              }
-            }
-
-            // If direct attempts failed and we can split this segment into 2 smaller halves, do so automatically!
-            if (splitDepth < 2 && segBytes.byteLength > 150 * 1024) {
-              const halves = splitClientSegmentInHalf(segBytes, segMime);
-              if (halves.length === 2) {
-                const pagesA = await transcribeBufferWithAutoSplit(
-                  halves[0].bytes,
-                  halves[0].mimeType,
-                  segIdx,
-                  splitDepth + 1
-                );
-                const pagesB = await transcribeBufferWithAutoSplit(
-                  halves[1].bytes,
-                  halves[1].mimeType,
-                  segIdx,
-                  splitDepth + 1
-                );
-                return [...pagesA, ...pagesB];
-              }
-            }
-
-            throw lastErr || new Error('شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
-          };
-
-          // Continuous 3-worker pool with staggered start so upload bandwidth is never saturated
-          let nextSegCursor = 0;
-          const WORKER_COUNT = Math.min(3, totalSegs);
-
-          const runSegmentWorker = async (workerId: number) => {
-            if (workerId > 0) {
-              await new Promise((r) => setTimeout(r, workerId * 180));
-            }
-            while (true) {
-              const segIdx = nextSegCursor++;
-              if (segIdx >= totalSegs) break;
-
-              const cacheKey = `${file.name}:${file.size}:${totalSegs}:${segIdx}`;
-              const cachedPages = audioSegmentCacheRef.current.get(cacheKey);
-
-              if (cachedPages && cachedPages.length > 0) {
-                segResults[segIdx] = cachedPages;
-              } else {
-                const seg = clientSegments[segIdx];
-                const pages = await transcribeBufferWithAutoSplit(
-                  seg.bytes,
-                  seg.mimeType,
-                  segIdx,
-                  0
-                );
-                audioSegmentCacheRef.current.set(cacheKey, pages);
-                segResults[segIdx] = pages;
-              }
-
-              completedSegs++;
-              const pct = Math.min(
-                98,
-                10 + Math.round((completedSegs / Math.max(1, totalSegs)) * 88)
-              );
-              setAudioProgressPercent((prev) => Math.max(prev, pct));
-              setAudioConvertStatus(
-                `پشکا ${toEasternArabicNumerals(completedSegs)} ژ ${toEasternArabicNumerals(
-                  totalSegs
-                )} ب سەرکەفتیانە هاتە نڤیسین (${toEasternArabicNumerals(pct)}٪)...`
-              );
-            }
-          };
-
-          await Promise.all(
-            Array.from({ length: WORKER_COUNT }, (_, wIdx) => runSegmentWorker(wIdx))
-          );
-
-          const allOrderedParsed: { heading?: string; paragraphs: string[] }[] = [];
-          for (const r of segResults) {
-            if (r) allOrderedParsed.push(...r);
-          }
-          returnedPages = assembleBookPagesFromSegmentPages(
-            allOrderedParsed,
-            fileMode,
-            startPageNum,
-            effectiveBookTitle,
-            computedLessonTitle,
-            effectiveSpeaker
-          );
-          setAudioProgressPercent(100);
-        } else {
-          // Fallback to server job if client segmentation returned empty
+        // Primary path: Upload original audio to server background worker (24kHz 64kbps studio-clarity 5-minute segments with deep thinking & rolling context)
+        try {
           const uploadId = await uploadBufferInChunks(
             '/api/audio-to-book',
             fileBytes,
@@ -2347,7 +2181,7 @@ export default function BadiniBookTranslatorPage() {
 
           setAudioProgressPercent((prev) => Math.max(prev, 22));
           setAudioConvertStatus(
-            `دەنگ گەهشتە سێرڤەری — دابەشکرن و نڤیسینا بلەز دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
+            `دەنگ گەهشتە سێرڤەری — شلۆڤەکرنا کویر و نڤیسینا زانستی دەستپێکر (${toEasternArabicNumerals(22)}٪)...`
           );
 
           const startJobObj = startData.job as { id?: string } | undefined;
@@ -2424,6 +2258,165 @@ export default function BadiniBookTranslatorPage() {
               }
             }
           }
+        } catch (serverJobErr) {
+          // Fallback to sequential high-clarity client segments with rolling context if server background job failed
+          const clientSegments = await prepareClientAudioSegments(file, fileBytes);
+          if (clientSegments.length === 0) {
+            throw serverJobErr;
+          }
+
+          const totalSegs = clientSegments.length;
+          const allOrderedParsed: { heading?: string; paragraphs: string[] }[] = [];
+          let rollingContextTail = '';
+
+          setAudioProgressPercent(10);
+          setAudioConvertStatus(
+            `دەنگ هاتە ئامادەکرن بۆ ${toEasternArabicNumerals(
+              totalSegs
+            )} پشکێن زەلال — نڤیسینا زانستی دەستپێکر (${toEasternArabicNumerals(10)}٪)...`
+          );
+
+          const transcribeBufferWithAutoSplit = async (
+            segBytes: Uint8Array,
+            segMime: string,
+            segIdx: number,
+            contextTail: string,
+            splitDepth = 0
+          ): Promise<{ heading?: string; paragraphs: string[] }[]> => {
+            let lastErr: unknown = null;
+            const maxDirectAttempts = splitDepth === 0 ? 3 : 4;
+
+            for (let attempt = 0; attempt < maxDirectAttempts; attempt++) {
+              try {
+                let res: Response;
+                if (attempt % 2 === 0) {
+                  const fd = new FormData();
+                  fd.append('action', 'transcribe-segment');
+                  fd.append('chunkIndex', String(segIdx));
+                  fd.append('totalSegments', String(totalSegs));
+                  fd.append('fileName', file.name);
+                  fd.append('mimeType', segMime);
+                  fd.append('bookTitle', effectiveBookTitle);
+                  fd.append('lessonTitle', computedLessonTitle);
+                  fd.append('speakerName', effectiveSpeaker);
+                  fd.append('previousContextTail', contextTail);
+                  fd.append(
+                    'chunk',
+                    new Blob([segBytes.slice().buffer as ArrayBuffer], {
+                      type: segMime,
+                    }),
+                    `seg_${segIdx}.${segMime.includes('wav') ? 'wav' : 'mp3'}`
+                  );
+
+                  res = await fetch('/api/audio-to-book', {
+                    method: 'POST',
+                    body: fd,
+                  });
+                } else {
+                  const chunkBase64 = uint8SliceToBase64(segBytes);
+                  res = await fetch('/api/audio-to-book', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      action: 'transcribe-segment',
+                      chunkIndex: segIdx,
+                      totalSegments: totalSegs,
+                      fileName: file.name,
+                      mimeType: segMime,
+                      bookTitle: effectiveBookTitle,
+                      lessonTitle: computedLessonTitle,
+                      speakerName: effectiveSpeaker,
+                      previousContextTail: contextTail,
+                      chunkBase64,
+                    }),
+                  });
+                }
+
+                const parsed = await safeParseJson(res);
+                if (!res.ok || parsed.error || !Array.isArray(parsed.pages)) {
+                  throw new Error(parsed.error || 'شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
+                }
+                return parsed.pages as { heading?: string; paragraphs: string[] }[];
+              } catch (err) {
+                lastErr = err;
+                await fetch('/api/audio-to-book?ping=1', { cache: 'no-store' }).catch(() => {});
+                await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+              }
+            }
+
+            if (splitDepth < 2 && segBytes.byteLength > 250 * 1024) {
+              const halves = splitClientSegmentInHalf(segBytes, segMime);
+              if (halves.length === 2) {
+                const pagesA = await transcribeBufferWithAutoSplit(
+                  halves[0].bytes,
+                  halves[0].mimeType,
+                  segIdx,
+                  contextTail,
+                  splitDepth + 1
+                );
+                const lastPageA = pagesA[pagesA.length - 1];
+                const tailA = lastPageA ? lastPageA.paragraphs.slice(-2).join(' ') : contextTail;
+                const pagesB = await transcribeBufferWithAutoSplit(
+                  halves[1].bytes,
+                  halves[1].mimeType,
+                  segIdx,
+                  tailA,
+                  splitDepth + 1
+                );
+                return [...pagesA, ...pagesB];
+              }
+            }
+
+            throw lastErr || new Error('شاشی د نڤیسینا پشکا دەنگی دا چێبوو');
+          };
+
+          for (let segIdx = 0; segIdx < totalSegs; segIdx++) {
+            const cacheKey = `${file.name}:${file.size}:${totalSegs}:${segIdx}:v2`;
+            const cachedPages = audioSegmentCacheRef.current.get(cacheKey);
+            let segPages: { heading?: string; paragraphs: string[] }[];
+
+            if (cachedPages && cachedPages.length > 0) {
+              segPages = cachedPages;
+            } else {
+              const seg = clientSegments[segIdx];
+              segPages = await transcribeBufferWithAutoSplit(
+                seg.bytes,
+                seg.mimeType,
+                segIdx,
+                rollingContextTail,
+                0
+              );
+              audioSegmentCacheRef.current.set(cacheKey, segPages);
+            }
+
+            allOrderedParsed.push(...segPages);
+            const lastSegPage = segPages[segPages.length - 1];
+            if (lastSegPage && Array.isArray(lastSegPage.paragraphs)) {
+              rollingContextTail = lastSegPage.paragraphs.slice(-2).join(' ');
+            }
+
+            const completedSegs = segIdx + 1;
+            const pct = Math.min(
+              98,
+              10 + Math.round((completedSegs / Math.max(1, totalSegs)) * 88)
+            );
+            setAudioProgressPercent((prev) => Math.max(prev, pct));
+            setAudioConvertStatus(
+              `پشکا ${toEasternArabicNumerals(completedSegs)} ژ ${toEasternArabicNumerals(
+                totalSegs
+              )} ب سەرکەفتیانە هاتە نڤیسین (${toEasternArabicNumerals(pct)}٪)...`
+            );
+          }
+
+          returnedPages = assembleBookPagesFromSegmentPages(
+            allOrderedParsed,
+            fileMode,
+            startPageNum,
+            effectiveBookTitle,
+            computedLessonTitle,
+            effectiveSpeaker
+          );
+          setAudioProgressPercent(100);
         }
 
         if (returnedPages.length === 0) {
